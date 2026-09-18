@@ -1,0 +1,132 @@
+# survspk default configuration.
+# Paths are given per "profile". The profile is chosen by $SURVSPK_PROFILE, or auto-detected:
+#   - "vm"    when ~/mnt/Stargazer exists (the Cowork Linux sandbox with folders mounted)
+#   - "macos" otherwise
+profiles:
+  macos:
+    video_root: "/Volumes/Max2NUC Files/TV Shows/Survivor (2000) {TvbId-76733}"
+    subtitle_root: "/Volumes/Max2NUC Files/Subtitles"
+    work_root: "/Users/maxgrody/Documents/Claude/Projects/Stargazer/survivor_audio"
+    survivor_snapshot: "/Users/maxgrody/Documents/Claude/Projects/Stargazer/Gamebot/gamebot_lite/data/gamebot.sqlite"
+    sqlite_journal: WAL
+  vm:
+    video_root: "~/mnt/Survivor (2000) {TvbId-76733}"
+    subtitle_root: "~/mnt/Subtitles"
+    work_root: "~/mnt/Stargazer/survivor_audio"
+    survivor_snapshot: "~/mnt/Stargazer/Gamebot/gamebot_lite/data/gamebot.sqlite"
+    sqlite_journal: TRUNCATE   # FUSE mount cannot delete files, so WAL/DELETE journals fail with "disk I/O error"
+
+# Relative to work_root
+layout:
+  db: "db/survspk.sqlite"
+  survivor_db: "survivor_data/survivor.sqlite"
+  raw: "raw"
+  center: "center"
+  vocals: "vocals"
+  embeddings: "embeddings"
+  frames: "frames"
+
+survivor:
+  raw_url: "https://raw.githubusercontent.com/doehm/survivoR/master/data"
+  tables: [castaways, castaway_details, boot_mapping, episodes, confessionals]
+
+inventory:
+  video_extensions: [".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts"]
+  skip_title_patterns: ["reunion"]          # case-insensitive substring match on filename
+  prefer_sdh: true
+  max_duration_delta_s: 20                  # subtitle last-cue-end vs ffprobe duration
+  max_length_delta_min: 3                   # ffprobe duration vs survivoR episode_length
+  ffprobe_timeout_s: 60
+
+subparse:
+  name_prefix_min_lines: 20                 # a file "has NAME: prefixes" if at least this many lines match
+  marker_min_lines: 20
+
+storage:
+  format: flac
+  keep_raw: false
+  make_center: ablation_only
+
+compute:
+  device: mps
+  diarization_device: cpu
+
+models:
+  embedding: speechbrain/spkrec-ecapa-voxceleb
+  separation: demucs-mlx:htdemucs
+  alignment: whisperx-wav2vec2-en
+  diarization: pyannote/speaker-diarization-3.1
+  ocr: apple-vision
+
+audio:
+  sample_rate: 16000
+  variant: vocals              # which variant align/embed use by default
+  separation_source: raw       # raw | center (center exists only for 5.1 sources)
+  make_center: when_51
+  keep_raw: true               # M1 keeps raw for the ablation; flip to false at M4 to save disk
+  demucs_model: htdemucs
+  device: mps
+
+align:
+  pad_s: 0.4
+  min_word_score: 0.3
+  offset_windows: 5
+  offset_window_s: 240
+  max_lag_s: 90
+  apply_min_offset_s: 0.25
+  device: mps
+
+segment:
+  merge_gap_s: 0.8
+  merge_max_s: 12
+  sdh_propagate_gap_s: 2.5
+  bank_min_duration_s: 1.5
+  recap_search_s: 240
+  recap_gap_s: 4
+  recap_max_s: 420
+  run_gap_s: 1.5               # monologue run: consecutive unmarked, name-compatible utterances within this gap
+  confessional_run_s: 6        # runs >= this are domain 'confessional' (validated vs survivoR counts on US47E02)
+
+embed:
+  model: speechbrain/spkrec-ecapa-voxceleb
+  pad_s: 0.1
+  batch_size: 32
+  device: mps
+  min_duration_s: 0.5
+
+thresholds:                    # assign (spec §7.7.5), on cosine to the bank
+  accept: 0.55
+  margin: 0.08
+  floor: 0.35
+  bank_min_confidence: 0.60
+  purity_min_s: 1.0            # utterances shorter than this do not vote when a run is checked for a speaker change
+
+bank:
+  exemplars_per_speaker: 20
+  recency_half_life_episodes: 3
+  score_mode: centroid         # centroid | exemplar | blend  (M1: centroid beat nearest-exemplar on US47E02)
+
+franchises:
+  US:
+    host_id: HOST_US
+    host_names: [PROBST, JEFF, "JEFF PROBST"]
+    chyron_crop: [0.72, 1.0]
+  AU:
+    host_id: HOST_AU
+    host_names: [JONATHAN, LAPAGLIA, "JONATHAN LAPAGLIA", JLP]
+    chyron_crop: [0.70, 1.0]
+
+text_prior:                    # EXPERIMENT, off by default. Local LLM vote on queued runs (survspk text-prior) via oMLX.
+                               # US47E02 A/B (2026-09-07): 26% / 27% (thinking) / 37.5% (27B) precision vs explicit names.
+                               # Not a labeler; kept as a research hook.
+  base_url: "http://127.0.0.1:8001/v1"
+  model: "Qwen3.6-35B-A3B-MLX-8bit"      # directory name under ~/models as oMLX exposes it (see GET /v1/models)
+  temperature: 0.0
+  max_tokens: 600
+  timeout_s: 180
+  concurrency: 4
+  disable_thinking: true       # Qwen3.x thinking off: 10x faster, and the task is a lookup, not a derivation
+  context_runs: 3
+  use_in_assign: false         # never turn on below ~80% precision on `text-prior --eval-only`
+  show_in_review: false        # show its vote as a candidate in the review UI
+  min_confidence: 0.8

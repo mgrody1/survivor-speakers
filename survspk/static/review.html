@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>survspk review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#111417; --panel:#1a1f24; --ink:#e8e6e1; --dim:#9aa3ad; --accent:#f2b134; --ok:#5fbf7a; --warn:#e06c5c; --line:#2a3138; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  header { display:flex; gap:16px; align-items:center; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.04em; color:var(--accent); }
+  header button:disabled { opacity:.4; cursor:default; }
+  header select, header button, .btn { background:#22282f; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  header .spacer { flex:1; }
+  header .count { color:var(--dim); }
+  main { display:grid; grid-template-columns: 1fr 340px; gap:18px; padding:18px; max-width:1400px; margin:0 auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
+  .meta { color:var(--dim); font-size:13px; display:flex; gap:14px; flex-wrap:wrap; }
+  .reason { color:var(--accent); font-weight:600; }
+  .reason.sdh_conflict { color:var(--warn); }
+  .ctx { color:var(--dim); font-size:14px; margin:6px 0; }
+  .ctx b { color:var(--ink); font-weight:600; }
+  .stale { color:var(--warn); font-size:12px; }
+  .passage { font-size:17px; line-height:1.5; margin:10px 0 14px; }
+  audio { width:100%; margin:8px 0 4px; }
+
+  /* lines of the group */
+  .utt { display:flex; align-items:baseline; gap:8px; padding:8px 10px; border-left:3px solid var(--line); margin:4px 0; cursor:pointer; border-radius:0 6px 6px 0; }
+  .utt .mark { width:18px; height:18px; border-radius:50%; border:1.5px solid var(--dim); display:grid; place-items:center; font-size:11px; color:#111; flex:none; align-self:center; }
+  .utt.sel { border-left-color:var(--accent); background:#20262d; }
+  .utt.sel .mark { background:var(--accent); border-color:var(--accent); }
+  .utt.sel .mark::after { content:"✓"; }
+  .utt:not(.sel) { opacity:.5; }
+  .utt:not(.sel):hover { opacity:.8; }
+  .utt .t { color:var(--dim); font-size:12px; flex:none; }
+  .utt .play { color:var(--dim); font-size:12px; cursor:pointer; flex:none; padding:0 3px; border-radius:4px; }
+  .utt .play:hover { color:var(--accent); background:#2a3138; }
+  .utt .txt { flex:1; }
+  .utt .lab { color:var(--dim); font-size:12px; white-space:nowrap; }
+  .utt .cut { color:var(--dim); cursor:pointer; font-size:12px; opacity:.55; white-space:nowrap; padding:1px 6px; border:1px solid transparent; border-radius:5px; }
+  .utt:hover .cut { opacity:1; }
+  .utt .cut:hover { color:var(--accent); border-color:var(--line); }
+  .utt.splitting { opacity:1; background:#1d232a; cursor:default; border-left-color:var(--warn); }
+  .utt.splitting .cut { opacity:1; color:var(--warn); }
+  .utt .w { cursor:pointer; padding:2px 1px; border-left:2px solid transparent; margin-left:-2px; }
+  .utt .w[data-k="0"] { cursor:default; }
+  .utt .w:not([data-k="0"]):hover { border-left-color:var(--warn); background:#2a3138; }
+  .splithint { color:var(--warn); font-size:13px; margin:-2px 0 8px 13px; }
+  .selbar { display:flex; align-items:center; gap:10px; color:var(--dim); font-size:13px; margin:2px 0 10px; min-height:22px; }
+  .selbar b { color:var(--ink); }
+  .selbar .chip { border:1px solid var(--line); border-radius:6px; padding:1px 8px; cursor:pointer; color:var(--ink); }
+  .selbar .chip:hover { border-color:var(--accent); }
+  .selbar.part { color:var(--accent); }
+
+  /* candidates */
+  .cands { display:flex; flex-direction:column; gap:6px; }
+  .cand { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; cursor:pointer; }
+  .cand:hover { border-color:var(--accent); }
+  .cand .key { min-width:26px; height:26px; border-radius:6px; background:#2a3138; display:grid; place-items:center; font-weight:700; color:var(--accent); font-size:13px; }
+  .cand .src { color:var(--dim); font-size:12px; margin-left:auto; white-space:nowrap; }
+  .cand .conf { color:var(--ok); font-size:12px; }
+  .sub { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.08em; margin:14px 0 6px; }
+  .sub:first-child { margin-top:0; }
+  .sub .h { text-transform:none; letter-spacing:0; }
+  input.search { width:100%; background:#0f1215; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:8px 10px; font:inherit; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:4px; max-height:240px; overflow:auto; }
+  .grid div { padding:5px 8px; border-radius:6px; cursor:pointer; font-size:14px; }
+  .grid div:hover, .grid div.hl { background:#2a3138; }
+  .pseudo { display:flex; gap:6px; margin-top:8px; }
+  .pseudo div { flex:1; text-align:center; padding:5px 6px; border:1px solid var(--line); border-radius:6px; cursor:pointer; font-size:13px; color:var(--dim); }
+  .pseudo div:hover { border-color:var(--accent); color:var(--ink); }
+
+  /* coverage */
+  .cov { display:grid; grid-template-columns:1fr auto auto; gap:2px 10px; font-size:13px; }
+  .cov .bar { grid-column:1 / -1; height:3px; background:#2a3138; border-radius:2px; margin-bottom:4px; }
+  .cov .bar i { display:block; height:100%; background:var(--ok); border-radius:2px; }
+  .cov .thin .bar i { background:var(--warn); }
+  .cov .row { display:contents; }
+  .cov .thin .nm { color:var(--warn); }
+  .cov .nm { cursor:pointer; }
+  .cov .nm:hover { text-decoration:underline; }
+  .cov .h { color:var(--dim); }
+  .cov .quiet .nm { color:var(--dim); }
+  .cov .quiet .bar i { background:var(--dim); }
+  .cov .ok .nm::after { content:" ✓"; color:var(--ok); }
+  .cov .more { grid-column:1 / -1; color:var(--dim); font-size:12px; margin:-2px 0 4px; }
+  .cov .thin .more { color:var(--warn); }
+  .covnote { font-size:13px; margin:0 0 10px; line-height:1.5; }
+  .covnote.done { color:var(--ok); }
+  .covnote .n { color:var(--warn); font-weight:600; }
+  .covfoot { color:var(--dim); font-size:12px; line-height:1.5; margin-top:10px; border-top:1px solid var(--line); padding-top:8px; }
+  .covfoot b { color:var(--ink); }
+  .quiet { color:var(--dim); font-style:italic; }
+
+  .help { color:var(--dim); font-size:12px; line-height:1.8; }
+  kbd { background:#2a3138; border-radius:4px; padding:0 5px; font:12px ui-monospace, Menlo, monospace; color:var(--ink); }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#22282f; border:1px solid var(--line); padding:8px 14px; border-radius:8px; color:var(--ink); opacity:0; transition:opacity .2s; }
+  .toast.show { opacity:1; }
+  .tp-reason { color:var(--dim); font-size:13px; margin:2px 0 0 36px; }
+  .done { text-align:center; color:var(--dim); padding:60px 0; font-size:18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>survspk review</h1>
+  <select id="episode"></select>
+  <span class="count" id="count"></span>
+  <span class="stale" id="stale"></span>
+  <span class="spacer"></span>
+  <select id="sort" title="queue order"><option value="value">longest first</option><option value="thin">thin speakers first</option></select>
+  <label class="count"><input type="checkbox" id="vocals"> vocals stem</label>
+  <button id="undo" disabled title="undo the last label or split (z)">↩ undo</button>
+  <button id="refit" title="refit the bank from all labels so far (explicit + yours + confident auto) and re-assign this episode; runs the fuller bank can now place leave the queue">refit &amp; reassign</button>
+</header>
+<main>
+  <section class="card" id="item"><div class="done">loading…</div></section>
+  <aside>
+    <div class="card">
+      <div class="sub">label as</div>
+      <div class="selbar" id="selbar"></div>
+      <div class="cands" id="cands"></div>
+      <div class="sub">everyone</div>
+      <input class="search" id="search" placeholder="type a name, Enter to label">
+      <div class="grid" id="grid"></div>
+      <div class="pseudo">
+        <div data-id="OTHER" title="a real voice that is not a candidate (crew, crowd, unlisted)">other voice · o</div>
+        <div data-id="UNKNOWN" title="cannot tell">unknown · u</div>
+        <div data-id="NOSPEECH" title="music, effects, silence">no speech · x</div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="sub">bank coverage this episode</div>
+      <div class="covnote" id="covnote"></div>
+      <div class="cov" id="cov"></div>
+      <div class="covfoot">Target per castaway: <b>≥ 5 lines and ≥ 15 s</b> of trusted speech from this episode — the minimum the
+        bank's label-noise filter needs. More helps, but past the target the queue can be left to <i>refit &amp; reassign</i>.
+        A castaway who barely speaks this episode shows as <span class="quiet">quiet</span>: nothing in the queue is plausibly
+        theirs, so stop looking — a later episode will bank them.</div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="sub">keys</div>
+      <div class="help">
+        <kbd>1</kbd>–<kbd>9</kbd> pick candidate &nbsp; <kbd>s</kbd> SDH name &nbsp; <kbd>a</kbd> audio top-1<br>
+        <kbd>o</kbd> other &nbsp; <kbd>u</kbd> unknown &nbsp; <kbd>x</kbd> no speech &nbsp; <kbd>/</kbd> search<br>
+        <kbd>space</kbd> play selection &nbsp; <kbd>,</kbd> slower &nbsp; <kbd>→</kbd>/<kbd>n</kbd> skip &nbsp; <kbd>←</kbd> back &nbsp; <kbd>z</kbd> undo (also the ↩ button; survives reload)<br>
+        <b>Two speakers in one group:</b> click a line to label only that line
+        (<kbd>⇧</kbd>-click for a range, <kbd>⌘</kbd>-click to add); <kbd>esc</kbd> = all lines again.<br>
+        <b>Two speakers in one line:</b> <kbd>✂ split</kbd> on the line, then click the first word of the second speaker.
+        Part 1 is selected for you; pick its speaker, then part 2 is selected.
+      </div>
+    </div>
+  </aside>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let data = null, groups = [], i = 0, sel = new Set(), history = [], preload = {};
+let vs = null, ep = null, anchor = null, nextSel = null, pendingB = null, splitting = false;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)} : {});
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function toast(m, ms = 1600) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), ms); }
+const mmss = t => `${String(Math.floor(t/60)).padStart(2,'0')}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+
+async function loadEpisodes() {
+  const eps = await api('/api/episodes');
+  window._eps = eps;
+  const sel = $('#episode');
+  sel.innerHTML = eps.map(e => `<option value="${e.vs}|${e.ep}">${e.vs} E${String(e.ep).padStart(2,'0')} — ${e.n_open} open, ${e.n_done} done</option>`).join('');
+  const saved = localStorage.getItem('survspk.ep');
+  if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+  sel.onchange = () => { localStorage.setItem('survspk.ep', sel.value); loadQueue(); };
+  if (eps.length) await loadQueue();
+  else $('#item').innerHTML = '<div class="done">no queue yet — run <kbd>survspk assign</kbd> first</div>';
+}
+
+async function loadQueue() {
+  [vs, ep] = $('#episode').value.split('|'); ep = +ep;
+  loadHistory();
+  data = await api(`/api/queue/${vs}/${ep}`);
+  window._cov = await api(`/api/coverage/${vs}/${ep}`);
+  renderCoverage();
+  groups = data.groups.filter(g => !g.resolved);
+  if ($('#sort').value === 'thin') {
+    const thin = new Set(window._cov.filter(c => c.status === 'thin').map(c => c.id));
+    const score = g => (g.audio_top.some(([id]) => thin.has(id)) ? 0 : 1);
+    groups.sort((a, b) => score(a) - score(b) || b.dur - a.dur);
+  }
+  const e = (window._eps || []).find(x => x.vs === vs && x.ep === ep);
+  $('#stale').textContent = e && e.stale_embeddings ? 'split lines have no voice vectors yet — refit & reassign re-embeds this episode first (a few minutes)' : '';
+  i = 0; preload = {};
+  renderGrid();
+  show();
+}
+
+const variant = () => $('#vocals').checked ? 'vocals' : 'raw';
+function clipUrl(g, a, b) { return `/api/clip/${vs}/${ep}?start=${a ?? g.start_s}&end=${b ?? g.end_s}&variant=${variant()}`; }
+function warm(k) { for (let j = k; j < Math.min(groups.length, k + 3); j++) { const u = clipUrl(groups[j]); if (!preload[u]) { const a = new Audio(); a.preload = 'auto'; a.src = u; preload[u] = a; } } }
+function playRange(a, b) { const p = $('#player'); if (!p) return; const u = clipUrl(groups[i], a, b); if (p.getAttribute('src') !== u) p.src = u; p.currentTime = 0; p.play(); }
+function selRange() {
+  const g = groups[i]; const us = g.utts.filter(u => sel.has(u.utt_id));
+  return us.length && us.length < g.utts.length ? [us[0].start_s, us[us.length - 1].end_s] : [g.start_s, g.end_s];
+}
+
+function show() {
+  $('#count').textContent = `${groups.length - i} open`;
+  const box = $('#item');
+  splitting = false;
+  if (i >= groups.length) { box.innerHTML = '<div class="done">queue empty for this episode 🎉<br><small>next: <kbd>survspk bank US47 --episodes 1,2</kbd> then assign the next episode</small></div>'; $('#cands').innerHTML = ''; $('#selbar').innerHTML = ''; return; }
+  const g = groups[i];
+  sel = new Set(g.utt_ids); anchor = null;
+  if (nextSel) { const want = g.utt_ids.filter(u => nextSel.has(u)); if (want.length) { sel = new Set(want); nextSel = null; } }
+  const reasons = g.reasons.map(r => `<span class="reason ${r}">${r}</span>`).join(' ');
+  const ctx = rows => rows.map(r => `<div class="ctx">${r.mmss} <b>${r.speaker || '?'}</b> ${r.text}</div>`).join('');
+  box.innerHTML = `
+    <div class="meta"><span>${g.mmss}</span><span>${g.dur}s</span><span>${g.domain}</span><span>${g.segment}</span>${reasons}<span>${i+1}/${groups.length}</span></div>
+    ${ctx(g.before)}
+    <audio id="player" controls autoplay src="${clipUrl(g)}"></audio>
+    <div class="passage">${g.utts.map(u => `<div class="utt" data-id="${u.utt_id}"><span class="mark"></span><span class="t">${mmss(u.start_s)}</span><span class="play" title="play just this line">▶</span><span class="txt">${u.text || '<i>(no text)</i>'}</span><span class="lab">${u.label ? u.label + ' · ' + u.label_source : ''}</span><span class="cut" title="two speakers in this line? split it at a word">✂ split</span></div>`).join('')}</div>
+    ${ctx(g.after)}`;
+  box.querySelectorAll('.utt').forEach(el => el.onclick = ev => {
+    if (splitting || ['cut', 'w', 'play'].some(c => ev.target.classList.contains(c))) return;
+    const id = el.dataset.id, ids = g.utt_ids;
+    if (ev.shiftKey && anchor) {
+      const [a, b] = [ids.indexOf(anchor), ids.indexOf(id)].sort((x, y) => x - y);
+      sel = new Set(ids.slice(a, b + 1));
+    } else if (ev.metaKey || ev.ctrlKey) {
+      if (sel.has(id)) { if (sel.size > 1) sel.delete(id); } else sel.add(id);
+    } else if (sel.size === 1 && sel.has(id)) {
+      sel = new Set(ids);                                   // click the solo line again -> whole group
+    } else {
+      sel = new Set([id]);                                  // plain click -> only this line
+    }
+    anchor = id;
+    paintSel();
+  });
+  box.querySelectorAll('.play').forEach(el => el.onclick = ev => { ev.stopPropagation(); const u = g.utts.find(x => x.utt_id === el.parentElement.dataset.id); playRange(u.start_s, u.end_s); });
+  box.querySelectorAll('.cut').forEach(el => el.onclick = async ev => { ev.stopPropagation(); await startSplit(el.parentElement); });
+  paintSel();
+  if (sel.size < g.utt_ids.length) $('#player').src = clipUrl(g, ...selRange());   // a pre-selected part plays alone
+  renderCands(g);
+  warm(i + 1);
+}
+
+function paintSel() {
+  const g = groups[i]; if (!g) return;
+  document.querySelectorAll('.utt').forEach(el => el.classList.toggle('sel', sel.has(el.dataset.id)));
+  const n = g.utt_ids.filter(u => sel.has(u)).length, all = n === g.utt_ids.length;
+  const bar = $('#selbar');
+  bar.className = 'selbar' + (all ? '' : ' part');
+  bar.innerHTML = all
+    ? `<span>whole group · <b>${g.utt_ids.length}</b> line${g.utt_ids.length === 1 ? '' : 's'}</span>${g.utt_ids.length > 1 ? '<span class="h">— click a line to label just that one</span>' : ''}`
+    : `<span><b>${n}</b> of ${g.utt_ids.length} lines</span><span class="chip" id="selall" title="esc">all lines</span><span class="chip" id="selplay" title="space">▶ play</span>`;
+  const a = $('#selall'); if (a) a.onclick = () => { sel = new Set(g.utt_ids); paintSel(); };
+  const p = $('#selplay'); if (p) p.onclick = () => playRange(...selRange());
+}
+
+function renderCands(g) {
+  const list = [];
+  const seen = new Set();
+  const add = (id, name, src, conf, key) => { if (!id || seen.has(id)) return; seen.add(id); list.push({id, name, src, conf, key}); };
+  if (g.text_prior && g.text_prior.speaker_id) add(g.text_prior.speaker_id, g.text_prior.name, 'text prior', g.text_prior.confidence, 't');
+  if (g.sdh) add(g.sdh.speaker_id, g.sdh.name, g.sdh.explicit ? 'SDH name (explicit)' : 'SDH name (inherited)', null, 's');
+  g.audio_top.forEach(([id, sc, name], k) => add(id, name, `audio #${k+1}`, sc, k === 0 ? 'a' : null));
+  const spk = new Set([...g.before, ...g.after].map(r => r.speaker).filter(Boolean));
+  const byName = Object.fromEntries(data.candidates.map(c => [c.name, c.id]));
+  spk.forEach(nm => add(byName[nm], nm, 'neighbour', null, null));
+  list.forEach((c, k) => c.num = k + 1);
+  $('#cands').innerHTML = list.map(c => `
+    <div class="cand" data-id="${c.id}"><span class="key">${c.num}</span><span>${c.name}</span>
+      ${c.conf != null ? `<span class="conf">${(+c.conf).toFixed(2)}</span>` : ''}<span class="src">${c.src}${c.key ? ' · ' + c.key : ''}</span></div>
+    ${c.src === 'text prior' && g.text_prior.reason ? `<div class="tp-reason">${g.text_prior.reason}</div>` : ''}`).join('');
+  $('#cands').querySelectorAll('.cand').forEach(el => el.onclick = () => label(el.dataset.id));
+  window._cands = list;
+}
+
+function renderCoverage() {
+  const cov = window._cov || [];
+  const minU = cov.length ? cov[0].min_utts : 5, minS = cov.length ? cov[0].min_secs : 15;
+  const thin = cov.filter(c => c.status === 'thin'), quiet = cov.filter(c => c.status === 'quiet'), ok = cov.filter(c => c.status === 'banked');
+  const note = $('#covnote');
+  note.className = 'covnote' + (thin.length ? '' : ' done');
+  note.innerHTML = thin.length
+    ? `<b>${ok.length}</b> of ${cov.length} at target · <span class="n">${thin.length} still thin</span> — label these${quiet.length ? ` · ${quiet.length} quiet this episode (skip)` : ''}`
+    : `✓ Done for this episode: every castaway who speaks enough is at target${quiet.length ? ` (${quiet.length} quiet — later episodes)` : ''}. Press <b>refit &amp; reassign</b>, then move on.`;
+  $('#cov').innerHTML = cov.map(c => {
+    const cls = c.status === 'banked' ? 'ok' : c.status;
+    const pct = Math.min(100, 100 * Math.min(c.secs / minS, c.n / minU));
+    const more = c.status === 'thin' ? `~${Math.round(c.open_secs)} s in the queue could be theirs` : c.status === 'quiet' ? 'quiet this episode — nothing plausible left in the queue' : '';
+    return `<div class="row ${cls}"><span class="nm" data-id="${c.id}" title="label the selected lines as ${c.name}">${c.name}</span>` +
+      `<span class="h">${c.n}/${minU} lines${c.n_human ? ' · ' + c.n_human + ' yours' : ''}</span><span class="h">${Math.round(c.secs)}/${minS} s</span>` +
+      `<span class="bar"><i style="width:${pct}%"></i></span>${more ? `<span class="more">${more}</span>` : ''}</div>`;
+  }).join('');
+  $('#cov').querySelectorAll('.nm').forEach(el => el.onclick = () => label(el.dataset.id));
+}
+
+function renderGrid() {
+  const all = [...data.candidates, ...data.pseudo];
+  const q = $('#search').value.trim().toLowerCase();
+  const rows = all.filter(c => !q || c.name.toLowerCase().includes(q));
+  $('#grid').innerHTML = rows.map((c, k) => `<div data-id="${c.id}" class="${k === 0 && q ? 'hl' : ''}">${c.name}</div>`).join('');
+  $('#grid').querySelectorAll('div').forEach(el => el.onclick = () => label(el.dataset.id));
+  window._grid = rows;
+}
+
+async function label(speaker_id) {
+  if (i >= groups.length || splitting) return;
+  const g = groups[i];
+  const ids = g.utt_ids.filter(u => sel.has(u));
+  await api('/api/label', {utt_ids: ids, speaker_id});
+  const nm = (data.candidates.find(c => c.id === speaker_id) || data.pseudo.find(c => c.id === speaker_id) || {name: speaker_id}).name;
+  pushHistory({ids, what: `${ids.length === 1 ? 'line' : ids.length + ' lines'} at ${g.mmss} → ${nm}`});
+  const rest = g.utt_ids.filter(u => !sel.has(u));
+  if (!rest.length) { toast(`${ids.length === 1 ? 'line' : ids.length + ' lines'} → ${nm}`); groups.splice(i, 1); }
+  else {
+    g.utt_ids = rest; g.utts = g.utts.filter(u => rest.includes(u.utt_id)); g.start_s = g.utts[0].start_s; g.end_s = g.utts[g.utts.length-1].end_s;
+    if (pendingB && rest.includes(pendingB)) { nextSel = new Set([pendingB]); pendingB = null; }   // part 2 of a split
+    else if (rest.length === 1) nextSel = new Set(rest);      // one line left: it is the selection, name it next
+    toast(`${ids.length} → ${nm} · ${rest.length} line${rest.length === 1 ? '' : 's'} left in this group`);
+  }
+  show();
+}
+function focusOn(uttId) { const k = groups.findIndex(g => g.utt_ids.includes(uttId)); if (k >= 0 && k !== i) { i = k; show(); } }
+
+async function startSplit(lineEl) {
+  const id = lineEl.dataset.id;
+  const words = await api(`/api/words/${id}`);
+  if (words.length < 2) { toast('nothing to split: one word'); return; }
+  splitting = true;
+  document.querySelectorAll('.utt').forEach(el => { if (el !== lineEl) el.style.opacity = .35; });
+  lineEl.classList.add('splitting');
+  lineEl.querySelector('.txt').innerHTML = words.map((w, k) => `<span class="w" data-k="${k}" title="${k ? 'cut before this word (' + mmss(w.start_s) + ')' : ''}">${w.word}</span>`).join(' ');
+  const cut = lineEl.querySelector('.cut'); cut.textContent = '✕ cancel'; cut.onclick = ev => { ev.stopPropagation(); show(); };
+  const hint = document.createElement('div'); hint.className = 'splithint';
+  hint.textContent = 'click the FIRST word the second speaker says — the line is cut just before it (esc to cancel)';
+  lineEl.after(hint);
+  lineEl.querySelectorAll('.w').forEach(w => {
+    w.onmouseenter = () => { const k = +w.dataset.k; if (k) hint.textContent = `cut before “${words[k].word}” at ${mmss(words[k].start_s)} — part 1: “${words.slice(0, k).map(x => x.word).join(' ').slice(0, 60)}”`; };
+    w.onclick = async ev => {
+      ev.stopPropagation();
+      const k = +w.dataset.k; if (!k) { toast('that is the first word — click the first word of the SECOND speaker'); return; }
+      const r = await api('/api/split', {utt_id: id, before_word: k});
+      pushHistory({split: id, what: `split at ${r.t_cut.toFixed(1)}s`});
+      nextSel = new Set([r.parts[0]]); pendingB = r.parts[1];
+      await loadEpisodes();
+      focusOn(r.parts[0]);
+      toast(`split at ${r.t_cut.toFixed(1)}s — part 1 is selected: pick its speaker, then part 2`, 3000);
+    };
+  });
+}
+
+// undo history: per episode, kept in localStorage so a reload does not lose it
+const histKey = () => `survspk.hist.${vs}.${ep}`;
+function loadHistory() { try { history = JSON.parse(localStorage.getItem(histKey()) || '[]'); } catch (e) { history = []; } paintUndo(); }
+function pushHistory(h) { history.push(h); if (history.length > 200) history.shift(); try { localStorage.setItem(histKey(), JSON.stringify(history)); } catch (e) {} paintUndo(); }
+function paintUndo() {
+  const b = $('#undo'), h = history[history.length - 1];
+  b.disabled = !h; b.textContent = h ? `↩ undo: ${h.what}` : '↩ undo';
+}
+async function undo() {
+  const h = history[history.length - 1]; if (!h) return;
+  try {
+    if (h.split) { await api('/api/unsplit', {base_utt_id: h.split}); }
+    else { await api('/api/unlabel', {utt_ids: h.ids}); }
+  } catch (e) { toast('could not undo: ' + String(e.message || e).slice(0, 120), 4000); history.pop(); paintUndo(); return; }
+  history.pop(); try { localStorage.setItem(histKey(), JSON.stringify(history)); } catch (e) {}
+  toast(`undone: ${h.what}`);
+  if (h.split) { await loadEpisodes(); focusOn(h.split); } else { await loadQueue(); focusOn(h.ids[0]); }
+  paintUndo();
+}
+$('#undo').onclick = () => undo();
+
+document.addEventListener('keydown', async e => {
+  const inSearch = document.activeElement === $('#search');
+  if (inSearch) {
+    if (e.key === 'Enter') { const r = window._grid && window._grid[0]; if (r) { $('#search').value = ''; renderGrid(); label(r.id); $('#search').blur(); } }
+    if (e.key === 'Escape') { $('#search').value = ''; renderGrid(); $('#search').blur(); }
+    return;
+  }
+  const p = $('#player');
+  if (e.key === 'Escape') { if (splitting) show(); else if (groups[i]) { sel = new Set(groups[i].utt_ids); paintSel(); } return; }
+  if (e.key === ' ') { e.preventDefault(); playRange(...selRange()); return; }
+  if (e.key === ',') { if (p) p.playbackRate = p.playbackRate > 0.8 ? 0.75 : 1.0; return; }
+  if (e.key === '/') { e.preventDefault(); $('#search').focus(); return; }
+  if (e.key === 'ArrowRight' || e.key === 'n') { if (i < groups.length - 1) { i++; show(); } return; }
+  if (e.key === 'ArrowLeft') { if (i > 0) { i--; show(); } return; }
+  if (e.key === 'z') { undo(); return; }
+  if (e.key === 'o') return label('OTHER');
+  if (e.key === 'u') return label('UNKNOWN');
+  if (e.key === 'x') return label('NOSPEECH');
+  if (/^[1-9]$/.test(e.key)) { const c = window._cands[+e.key - 1]; if (c) label(c.id); return; }
+  if (e.key === 's' || e.key === 't' || e.key === 'a') { const c = (window._cands || []).find(c => c.key === e.key); if (c) label(c.id); else toast(`no ${e.key} candidate`); }
+});
+$('#search').addEventListener('input', renderGrid);
+$('#vocals').addEventListener('change', () => { preload = {}; show(); });
+$('#sort').addEventListener('change', () => loadQueue());
+document.querySelectorAll('.pseudo div').forEach(el => el.onclick = () => label(el.dataset.id));
+$('#refit').onclick = async () => {
+  const btn = $('#refit'); btn.disabled = true; btn.textContent = $('#stale').textContent ? 're-embedding + refitting… (minutes)' : 'refitting…';
+  try {
+    const r = await api('/api/refit', {vs, ep});
+    toast(`${r.re_embedded ? 're-embedded · ' : ''}bank: ${r.bank_speakers} speakers · auto now ${Math.round(100 * (r.body_auto_dur_share || 0))}% of body time · ${r.n_open} utts still open`, 5000);
+    await loadEpisodes();
+  } catch (e) { toast(String(e.message || e).slice(0, 160), 4000); }
+  btn.disabled = false; btn.textContent = 'refit & reassign';
+};
+loadEpisodes();
+</script>
+</body>
+</html>

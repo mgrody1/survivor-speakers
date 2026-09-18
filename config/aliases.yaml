@@ -1,0 +1,70 @@
+# Speaker-name resolution for SDH `NAME:` prefixes and chyron OCR text.
+# Resolution order (survspk/aliases.py):
+#   1. stoplist        -> no speaker (generic labels)
+#   2. host_names      -> HOST_<franchise>      (from default.yaml franchises.*.host_names)
+#   3. per-season map  -> castaway_id           (this file, seasons: section)
+#   4. survivoR        -> castaways.castaway (short name), then full_name, then first token of full_name
+#   5. unresolved      -> reported by `survspk names-report`
+#
+# Keys are compared uppercased, with surrounding punctuation and parentheticals removed.
+
+stoplist:
+  - MAN
+  - WOMAN
+  - MEN
+  - WOMEN
+  - ALL
+  - BOTH
+  - GROUP
+  - CROWD
+  - TOGETHER
+  - ANNOUNCER
+  - NARRATOR
+  - VOICE
+  - MALE
+  - FEMALE
+  - GIRL
+  - BOY
+  - GUY
+  - LADY
+  - CASTAWAY
+  - CASTAWAYS
+  - TRIBE
+  - EVERYONE
+  - OTHERS
+  - SPEAKER
+  - REPORTER
+  - DOCTOR
+  - MEDIC
+  - PRODUCER
+  - CAMERAMAN
+  - TV
+  - RADIO
+  - SINGER
+  - SINGERS
+  - ELAPSED TIME     # caption artifact (US30)
+
+# Per-season overrides, keyed by version_season, mapping SDH/chyron token -> castaway_id,
+# or -> OTHER (a real but non-cast speaker: loved one, medic, announcer), or -> HOST_US.
+# Populated from the M0 names-report (2026-09-07). Keep comments explaining each entry.
+# First-name clashes (ROB / JENNA in All-Stars) are NOT listed here: the resolver settles them per
+# episode from boot_mapping.
+seasons:
+  US01:
+    SUSAN: US0013      # survivoR short name is "Sue" (Susan Hawk); captions use SUSAN
+    RICH: US0016       # Richard Hatch
+  US05:
+    ALWAN: OTHER       # 5 lines in E01, not a castaway
+  US06:
+    MATT: US0095       # Matthew von Ertfelda
+  US07:
+    RYNO: US0106       # Ryan Opray ("Ryan O.")
+    LILL: US0099       # Lillian Morris
+  US08:
+    ROB M: US0055      # Rob Mariano ("Boston Rob")
+  US19:
+    JF: HOST_US        # captioner abbreviation for Jeff Probst (E01 file)
+  US40:
+    TED: OTHER         # CBS promo announcer voice-over in the premiere file
+  US44:
+    WILL: OTHER        # non-cast speaker in E01 ("Can you sit back?")

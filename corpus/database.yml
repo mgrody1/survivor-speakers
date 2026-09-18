@@ -1,0 +1,18 @@
+Databases:
+  Survivor: /Users/maxgrody/Documents/Claude/Projects/Stargazer/survivor-speakers/corpus/audio/{uri}.flac
+Protocols:
+  Survivor:
+    SpeakerDiarization:
+      All:
+        train:
+          uri: lists/train.lst
+          annotation: rttm/{uri}.rttm
+          annotated: uem/{uri}.uem
+        development:
+          uri: lists/dev.lst
+          annotation: rttm/{uri}.rttm
+          annotated: uem/{uri}.uem
+        test:
+          uri: lists/test.lst
+          annotation: rttm/{uri}.rttm
+          annotated: uem/{uri}.uem

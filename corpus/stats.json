@@ -1,0 +1,92 @@
+{
+ "episodes": {
+  "US47_E01": {
+   "n_labels": 3,
+   "by_source": {
+    "human": 3
+   },
+   "speech_s": 27.9,
+   "annotated_s": 29.1,
+   "total_s": 5151.3,
+   "n_speakers": 2,
+   "spk_rows": 3,
+   "per_speaker_s": {
+    "HOST_US": 19.6,
+    "US0699": 8.3
+   },
+   "split": "train"
+  },
+  "US47_E02": {
+   "n_labels": 323,
+   "by_source": {
+    "sdh": 119,
+    "auto": 107,
+    "sdh_run": 72,
+    "human": 25
+   },
+   "speech_s": 1630.9,
+   "annotated_s": 1750.6,
+   "total_s": 3866.0,
+   "n_speakers": 18,
+   "spk_rows": 321,
+   "per_speaker_s": {
+    "HOST_US": 376.4,
+    "US0698": 98.3,
+    "US0699": 59.0,
+    "US0700": 25.2,
+    "US0701": 18.9,
+    "US0702": 164.8,
+    "US0703": 7.7,
+    "US0705": 20.4,
+    "US0706": 39.0,
+    "US0707": 15.2,
+    "US0708": 68.7,
+    "US0709": 194.9,
+    "US0710": 31.9,
+    "US0711": 9.3,
+    "US0712": 85.4,
+    "US0713": 39.1,
+    "US0714": 193.0,
+    "US0715": 183.8
+   },
+   "split": "dev"
+  }
+ },
+ "n_episodes": 2,
+ "splits": {
+  "train": 1,
+  "dev": 1,
+  "test": 0
+ },
+ "speech_hours": 0.46,
+ "annotated_hours": 0.49,
+ "n_speakers": 18,
+ "spk_utts": {
+  "train": 3,
+  "dev": 321,
+  "test": 0
+ },
+ "spk_hours": 0.46,
+ "n_trials_dev": 4000,
+ "variant": "raw",
+ "per_speaker_s": {
+  "HOST_US": 396.0,
+  "US0709": 195.0,
+  "US0714": 192.0,
+  "US0715": 184.0,
+  "US0702": 165.0,
+  "US0698": 98.0,
+  "US0712": 85.0,
+  "US0708": 69.0,
+  "US0699": 67.0,
+  "US0706": 39.0,
+  "US0713": 39.0,
+  "US0710": 32.0,
+  "US0700": 25.0,
+  "US0705": 20.0,
+  "US0701": 19.0,
+  "US0707": 15.0,
+  "US0711": 9.0,
+  "US0703": 8.0
+ }
+}

@@ -1,0 +1,4 @@
+id,wav,start_s,end_s,duration,speaker_id,season,episode,source,domain,uri
+US47_E01_U0266,/Users/maxgrody/Documents/Claude/Projects/Stargazer/survivor_audio/raw/US47/E01.flac,952.708,962.621,9.913,HOST_US,US47,1,human,confessional,US47_E01
+US47_E01_U0503,/Users/maxgrody/Documents/Claude/Projects/Stargazer/survivor_audio/raw/US47/E01.flac,1807.816,1816.138,8.322,US0699,US47,1,human,confessional,US47_E01
+US47_E01_U1404,/Users/maxgrody/Documents/Claude/Projects/Stargazer/survivor_audio/raw/US47/E01.flac,4905.096,4914.755,9.659,HOST_US,US47,1,human,confessional,US47_E01
