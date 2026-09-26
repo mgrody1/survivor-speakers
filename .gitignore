@@ -10,3 +10,5 @@ Archive.zip
 corpus/audio/
 .DS_Store
 snapshot_for_claude.tgz
+# real subtitle excerpts: the tests use them locally, they never leave this machine
+tests/fixtures/*.srt

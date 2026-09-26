@@ -2,12 +2,16 @@
 
 from pathlib import Path
 
+import pytest
+
 from survspk.config import SegmentCfg
 from survspk.stage_segment import (Turn, Utt, build_utterances, can_merge, cue_to_turns, merge_turns,
                                    propagate_names)
 from survspk.subparse import parse_srt
 
 FIX = Path(__file__).parent / "fixtures"
+pytestmark = pytest.mark.skipif(not any(FIX.glob("*.srt")),
+                                reason="real-subtitle fixtures stay on this machine (not in git)")
 CFG = SegmentCfg()
 IDENT = lambda t: t  # noqa: E731
 

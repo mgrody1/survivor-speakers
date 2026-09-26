@@ -7,6 +7,8 @@ import pytest
 from survspk.subparse import detect_convention, parse_srt, parse_srt_text
 
 FIX = Path(__file__).parent / "fixtures"
+pytestmark = pytest.mark.skipif(not any(FIX.glob("*.srt")),
+                                reason="real-subtitle fixtures stay on this machine (not in git)")
 
 
 @pytest.fixture(scope="module")
