@@ -47,6 +47,15 @@ def ffprobe_duration(path: Path) -> float | None:
         return None
 
 
+def is_truncated(path: Path, want_s: float | None) -> bool:
+    """Shorter than the video by more than max(5 s, 2%): a read that stopped early (US47 E08 on 2026-09-23 came out
+    1,400 s of a 3,837 s episode after a NAS hiccup, and every later stage ran on the first 23 minutes)."""
+    if not want_s or not path.exists():
+        return False
+    d = ffprobe_duration(path)
+    return d is not None and d < want_s - max(5.0, 0.02 * want_s)
+
+
 def extract_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, force: bool = False) -> dict:
     row = con.execute("SELECT video_path, audio_channels, duration_s FROM episodes WHERE version_season=? AND episode=?",
                       (vs, ep)).fetchone()
@@ -60,6 +69,10 @@ def extract_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: in
     out: dict[str, str] = {}
 
     raw = settings.audio_path("raw", vs, ep)
+    want = row["duration_s"]
+    if raw.exists() and not force and is_truncated(raw, want):
+        log.warning("%s E%02d raw is shorter than the video: extracting again", vs, ep)
+        force = True
     if raw.exists() and not force:
         log.info("%s E%02d raw exists", vs, ep)
     else:
@@ -76,10 +89,14 @@ def extract_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: in
             ffmpeg_extract(video, center, sr, center=True)
         out["center"] = str(center)
 
-    # sanity: extracted duration vs. probed duration
+    # sanity: extracted duration vs. probed duration; a truncated extraction stops the run instead of feeding it
     d = ffprobe_duration(raw)
-    if d and row["duration_s"] and abs(d - row["duration_s"]) > 2.0:
-        log.warning("%s E%02d raw duration %.1f s differs from video %.1f s", vs, ep, d, row["duration_s"])
+    for name, path in out.items():
+        if is_truncated(Path(path), want):
+            raise RuntimeError(f"{vs} E{ep:02d} {name} audio is {ffprobe_duration(Path(path)):.0f} s of a {want:.0f} s video: "
+                               f"the read stopped early (NAS?); run again with --force")
+    if d and want and abs(d - want) > 2.0:
+        log.warning("%s E%02d raw duration %.1f s differs from video %.1f s", vs, ep, d, want)
 
     con.execute("""UPDATE episodes SET audio_raw_path=?, audio_center_path=?, status='extracted'
                    WHERE version_season=? AND episode=?""", (out["raw"], out.get("center"), vs, ep))

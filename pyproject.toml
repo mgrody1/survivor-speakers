@@ -40,6 +40,8 @@ diarize = ["pyannote.audio>=3.3"]
 plex = ["python-dotenv>=1.0"]
 # Review UI.
 review = ["fastapi>=0.115", "uvicorn>=0.30"]
+# Chyron OCR: Apple Vision through ocrmac (macOS); pillow for the frame hand-off.
+ocr = ["ocrmac>=1.0; sys_platform == 'darwin'", "pillow>=10"]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "httpx2>=2.0"]   # installed by plain `uv sync`; httpx2: starlette TestClient (review UI tests)

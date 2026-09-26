@@ -234,3 +234,155 @@ def test_mention_rule_splits_mixed_run_and_queues_self_naming(season):
     assert set(q[q.utt_id.isin(ids[1])].reason) == {"name_mentioned"} and ids[0][0] not in set(q.utt_id)
     lab = pd.read_sql_query("SELECT * FROM labels", con).set_index("utt_id")
     assert lab.loc[ids[0][1], "speaker_id"] == "S_B" and lab.loc[ids[0][0], "speaker_id"] == "S_A"
+
+
+def test_voice_split_cuts_out_another_voice_and_short_groups_stay_unlabelled():
+    """Two people alternating inside one run: the line whose own voice clearly prefers someone else is cut out into its
+    own group; a line too short to judge follows its neighbour. Defaults: 2 s minimum for an auto label."""
+    import numpy as np
+
+    from survspk.stage_assign import Thresholds, _split_on_voice
+
+    class Stub:                                   # a vector (a, b) scores speaker A at a and B at b
+        def rank(self, v, domain):
+            return sorted([("A", float(v[0])), ("B", float(v[1]))], key=lambda x: -x[1])
+
+    th = Thresholds()
+    assert th.auto_min_s == 2.0 and th.voice_split and not th.voice_split_confident
+    vecs = [np.array([0.8, 0.2]), np.array([0.8, 0.3]), np.array([0.40, 0.52]), np.array([0.9, 0.1]), np.array([0.8, 0.2])]
+    durs = [3.0, 2.0, 2.5, 0.5, 3.0]
+    assert _split_on_voice([[0, 1, 2, 3, 4]], vecs, durs, Stub(), "confessional", th) == [[0, 1], [2, 3], [4]]
+    # a group whose pooled voice is not confidently anyone is left alone
+    flat = [np.array([0.3, 0.3]), np.array([0.3, 0.35])]
+    assert _split_on_voice([[0, 1]], flat, [2.0, 2.0], Stub(), "confessional", th) == [[0, 1]]
+
+
+def test_host_voice_is_borrowed_from_another_season(season):
+    """A season with no host labels (S21-39: no caption names, no name card for Probst) gets the host's entries from
+    another season's bank, same variant and model; a season with its own host entries keeps them."""
+    import sqlite3
+
+    import numpy as np
+
+    from survspk.stage_bank import DOMAINS, borrow_host_entries
+
+    s, con, sea = season
+    con.row_factory = sqlite3.Row
+    v = np.ones(4, dtype=np.float32) / 2
+    for vs, n in (("US98", 50), ("US97", 10)):
+        for dom in DOMAINS:
+            con.execute("""INSERT INTO speaker_bank (version_season, speaker_id, domain, as_of_episode, centroid, exemplars, n_utts,
+                           dim, variant, model, total_dur_s, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (vs, "HOST_US", dom, 3, v.tobytes(), v.tobytes(), n, 4, "vocals", "m", 100.0, "{}"))
+    con.commit()
+    got = borrow_host_entries(con, "US99", "HOST_US", "vocals", "m", set())
+    assert {e.domain for e, _ in got} == set(DOMAINS) and {src for _, src in got} == {"US98"}      # the fuller one
+    assert borrow_host_entries(con, "US99", "HOST_US", "vocals", "m", set(DOMAINS)) == []
+    assert borrow_host_entries(con, "US99", "HOST_US", "raw", "m", set()) == []                    # other variant: no
+
+
+def test_rolling_bank_learns_from_earlier_episodes_trusted_labels_only(season):
+    """E1 labels A, B, C. E2 gives S_D a caption name and leaves S_B unnamed. Assigning E3 refits the bank from E1-2:
+    S_D becomes bankable; E2's auto labels (the bank's own guesses) never feed it."""
+    s, con, sea = season
+    build_bank(s, con, "US99", [1], variant="vocals")
+    sea.episode(2, [{"spk": "S_D", "label": "S_D", "n": 3, "dur_each": 4.0} for _ in range(2)]
+                + [{"spk": "S_B", "label": None, "n": 3, "dur_each": 4.0}])
+    assign_episode(s, con, "US99", 2, variant="vocals", resolver=None, write=True)      # writes auto labels for S_B
+    sea.episode(3, [{"spk": "S_D", "label": None, "n": 3, "dur_each": 4.0, "text": "QUIET_D"}])
+    for ep, n in ((1, 40), (2, 9), (3, 3)):
+        con.execute("INSERT OR REPLACE INTO episodes (version_season, episode, n_utterances) VALUES ('US99', ?, ?)", (ep, n))
+    con.commit()
+    frozen, st0 = assign_episode(s, con, "US99", 3, variant="vocals", resolver=None, write=False, bank_as_of=1)
+    assert st0["bank_rolled_from"] is None and frozen.pred.iloc[0] != "S_D"
+    df, st = assign_episode(s, con, "US99", 3, variant="vocals", resolver=None, write=False)
+    assert st["bank_rolled_from"] == [1, 2] and st["bank_as_of"] == 2
+    assert df.pred.iloc[0] == "S_D" and df.decision.iloc[0] == "auto"
+    bank, _ = load_bank(con, "US99", as_of=2)
+    b = con.execute("SELECT payload FROM speaker_bank WHERE version_season='US99' AND as_of_episode=2 "
+                    "AND speaker_id='S_B' AND domain='confessional'").fetchone()
+    e2_auto = {r[0] for r in con.execute("SELECT utt_id FROM labels WHERE source='auto'")}
+    assert e2_auto and not (set(json.loads(b[0])["utt_ids"]) & e2_auto)        # no auto label in S_B's entry
+    assert ("S_D", "confessional") in bank
+
+
+def test_line_change_finds_the_switch():
+    from survspk.stage_diarize import Track, line_change
+    dom = np.full(60000, -1, np.int8)                     # one 600 s window
+    dom[10000:10200] = 0                                  # 100.0-102.0 s voice 0
+    dom[10200:10400] = 1                                  # 102.0-104.0 s voice 1
+    dom[20000:20400] = 2                                  # 200-204 s one voice only
+    tr = Track(np.array([0.0]), np.array([0]), np.array([60000]), dom)
+    sec2, cut = line_change(tr, 100.0, 104.0)
+    assert sec2 == pytest.approx(2.0) and cut == pytest.approx(102.0, abs=0.02)
+    assert line_change(tr, 200.0, 204.0) == (0.0, None)
+    two = Track(np.array([0.0, 270.0]), np.array([0, 30000]), np.array([30000, 30000]), np.zeros(60000, np.int8))
+    assert two.window_for(280.0, 284.0) == 0 and two.window_for(290.0, 294.0) == 1
+
+
+def test_two_voice_lines_are_suggested_and_queued(season):
+    """A 6 s line: S_A for 3 s, then S_B. The diarizer hears the change, the bank names both sides."""
+    from survspk.split_detect import suggest_episode
+    from survspk.stage_diarize import Track
+    s, con, sea = season
+    build_bank(s, con, "US99", [1], variant="vocals")
+    ids = sea.episode(2, [{"spk": "S_A", "label": None, "n": 1, "dur_each": 6.0, "text": "TWO VOICES"},
+                          {"spk": "S_C", "label": None, "n": 1, "dur_each": 6.0, "text": "ONE VOICE"}])
+    u1 = con.execute("SELECT start_s, end_s FROM utterances WHERE utt_id=?", (ids[0][0],)).fetchone()
+    u2 = con.execute("SELECT start_s, end_s FROM utterances WHERE utt_id=?", (ids[1][0],)).fetchone()
+    sr = 16000
+    audio = np.zeros(int(400 * sr), np.float32)
+    a, b = u1[0], u1[1]
+    audio[int(a * sr):int((a + 3) * sr)] = 1.0
+    audio[int((a + 3) * sr):int(b * sr)] = 2.0
+    audio[int(u2[0] * sr):int(u2[1] * sr)] = 3.0
+    dom = np.full(40000, -1, np.int8)
+    dom[int(a * 100):int((a + 3) * 100)] = 0
+    dom[int((a + 3) * 100):int(b * 100)] = 1
+    dom[int(u2[0] * 100):int(u2[1] * 100)] = 0
+    track = Track(np.array([0.0]), np.array([0]), np.array([40000]), dom)
+    who = {1: "S_A", 2: "S_B", 3: "S_C"}
+
+    class Fake:
+        def encode(self, slices):
+            return np.stack([sea.centers[who[int(round(float(np.median(x[x > 0])) if (x > 0).any() else 1))]] for x in slices])
+
+    out = suggest_episode(s, con, "US99", 2, resolver=None, encoder=Fake(), track=track, audio=audio, auto=False)
+    assert [(d["utt_id"], d["left_spk"], d["right_spk"]) for d in out] == [(ids[0][0], "S_A", "S_B")]
+    assert out[0]["t_cut"] == pytest.approx(a + 3, abs=0.05)
+    q = con.execute("SELECT reason FROM review_queue WHERE utt_id=?", (ids[0][0],)).fetchone()
+    assert q[0] == "two_voices"
+    con.execute("UPDATE split_suggestions SET status='dismissed' WHERE utt_id=?", (ids[0][0],))
+    con.commit()
+    suggest_episode(s, con, "US99", 2, resolver=None, encoder=Fake(), track=track, audio=audio, auto=True, reembed=False)
+    assert con.execute("SELECT status FROM split_suggestions WHERE utt_id=?", (ids[0][0],)).fetchone()[0] == "dismissed"
+    assert con.execute("SELECT COUNT(*) FROM utterances WHERE utt_id=?", (ids[0][0],)).fetchone()[0] == 1   # not split
+    # undecided line, strong evidence: split automatically, each part labelled with its side's voice, nothing queued
+    con.execute("DELETE FROM split_suggestions")
+    con.execute("DELETE FROM review_queue")
+    con.commit()
+    out = suggest_episode(s, con, "US99", 2, resolver=None, encoder=Fake(), track=track, audio=audio, auto=True, reembed=False)
+    assert [d["utt_id"] for d in out if d["auto"]] == [ids[0][0]]          # the one-voice line is left alone
+    parts = con.execute("SELECT utt_id, start_s, start_s, start_s, end_s FROM utterances WHERE utt_id LIKE ? ORDER BY utt_id",
+                        (ids[0][0] + "_",)).fetchall()
+    assert len(parts) == 2 and json.loads(con.execute("SELECT flags FROM utterances WHERE utt_id=?", (parts[0][0],)).fetchone()[0])["split_auto"]
+    # re-assign labelled part a only (part b too short / undecided): part b takes its sibling's speaker
+    from survspk.split_detect import _fill_parts
+    con.execute("INSERT INTO labels (utt_id, speaker_id, source, confidence) VALUES (?, 'S_A', 'auto', 0.8)", (parts[0][0],))
+    con.commit()
+    assert _fill_parts(s, con, "US99", 2, [ids[0][0]], 1) == 1
+    assert tuple(con.execute("SELECT speaker_id, source FROM labels WHERE utt_id=?", (parts[1][0],)).fetchone()) == ("S_A", "auto")
+    assert parts[0][3] == pytest.approx(a) and parts[0][4] == pytest.approx(parts[1][3]) and parts[1][4] == pytest.approx(b)   # (no word times here: the cut falls between the line's two words)
+    assert con.execute("SELECT status FROM split_suggestions WHERE utt_id=?", (ids[0][0],)).fetchone()[0] == "auto"
+    assert con.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0] == 0
+
+
+def test_reassign_after_cutting_finds_the_seasons_first_bank(season):
+    """E01-02 of a new season share one bank stored as of E02; the re-assign after cutting E01 or E02 must use it."""
+    from survspk.split_detect import _bank_for
+    s, con, sea = season
+    assert _bank_for(con, "US99", 1) is None
+    build_bank(s, con, "US99", [1], variant="vocals", as_of=2)
+    assert _bank_for(con, "US99", 1) == 2 and _bank_for(con, "US99", 2) == 2 and _bank_for(con, "US99", 5) == 2
+    build_bank(s, con, "US99", [1], variant="vocals", as_of=4)
+    assert _bank_for(con, "US99", 5) == 4 and _bank_for(con, "US99", 3) == 2

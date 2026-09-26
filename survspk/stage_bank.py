@@ -28,8 +28,17 @@ log = logging.getLogger(__name__)
 DOMAINS = ("confessional", "field")
 
 
+PSEUDO_SPEAKERS = frozenset({"UNKNOWN", "NOSPEECH", "OTHER"})
+
+
 class StaleEmbeddings(RuntimeError):
-    """The episode's embedding parquet does not match its utterances table (re-segmented or split since)."""
+    """The episode's embedding parquet does not match its utterances table (re-segmented or split since).
+    Carries which episode, so a caller can re-embed that one (it need not be the episode being assigned)."""
+
+    def __init__(self, msg: str, vs: str | None = None, ep: int | None = None, variant: str | None = None,
+                 model: str | None = None):
+        super().__init__(msg)
+        self.vs, self.ep, self.variant, self.model = vs, ep, variant, model
 
 
 @dataclass
@@ -61,7 +70,8 @@ def load_vectors(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, 
         raise FileNotFoundError(f"{path} missing: run `survspk embed {vs} {ep} --variant {variant}`")
     why = staleness_reason(path, _current_utts(con, vs, ep, settings.embed.min_duration_s))
     if why:
-        raise StaleEmbeddings(f"{path.name} is stale ({why}); re-run `survspk embed {vs} {ep} --variant {variant}`")
+        raise StaleEmbeddings(f"{vs} {path.name} is stale ({why}); re-run `survspk embed {vs} {ep} --variant {variant}`",
+                              vs=vs, ep=ep, variant=variant, model=model)
     df = pd.read_parquet(path, columns=["utt_id", "vector", "snr_proxy"])
     df["vector"] = df.vector.apply(lambda v: np.asarray(v, dtype=np.float32))
     return df
@@ -107,6 +117,14 @@ def collect_labelled(settings: Settings, con: sqlite3.Connection, vs: str, episo
         m = ok & np.array([(r, sp) in anchored for r, sp in zip(df.run_id, df.sdh_speaker_id)], dtype=bool)
         df.loc[m, "speaker_id"], df.loc[m, "label_source"] = df.loc[m, "sdh_speaker_id"], "sdh"
         df.loc[m, "label_source"] = np.where(df.loc[m, "name_explicit"], "sdh", "sdh_run")
+        # chyron: the anchored utterance (its label) plus the rest of its run, where nothing names someone else --
+        # the only run-level label the `>>`-era seasons have. A run with two chyron names is left alone.
+        chy: dict[int, str] = {}
+        for r_, sp in zip(df[df.source == "chyron"].run_id, df[df.source == "chyron"].lab_speaker):
+            chy[r_] = None if chy.get(r_, sp) != sp else sp
+        run_spk = df.run_id.map({r_: sp for r_, sp in chy.items() if sp and r_ >= 0})
+        m = df.speaker_id.isna() & run_spk.notna() & (df.sdh_speaker_id.isna() | (df.sdh_speaker_id == run_spk))
+        df.loc[m, "speaker_id"], df.loc[m, "label_source"] = run_spk[m], "chyron_run"
         # auto (confident) fills gaps
         m = df.speaker_id.isna() & (df.source == "auto") & (df.confidence >= auto_min_conf)
         df.loc[m, "speaker_id"], df.loc[m, "label_source"] = df.loc[m, "lab_speaker"], "auto"
@@ -114,10 +132,12 @@ def collect_labelled(settings: Settings, con: sqlite3.Connection, vs: str, episo
         for src in ("chyron", "human"):
             m = df.source == src
             df.loc[m, "speaker_id"], df.loc[m, "label_source"] = df.loc[m, "lab_speaker"], src
-        df = df[df.speaker_id.notna() & (df.segment == "body")].copy()
+        # "unknown", "no speech" and "other voice" are answers, not speakers: a bank entry for them pools unrelated
+        # voices, and the consistency filter would drop real lines that happen to sit near that pool
+        df = df[df.speaker_id.notna() & ~df.speaker_id.isin(PSEUDO_SPEAKERS) & (df.segment == "body")].copy()
         df["self_mention"] = False
-        if resolver is not None:
-            sdh = df.label_source.isin(["sdh", "sdh_run"])
+        sdh = df.label_source.isin(["sdh", "sdh_run"])
+        if resolver is not None and sdh.any():        # seasons without caption names (S21-39) have none to check
             df.loc[sdh, "self_mention"] = [resolver.mentions(t or "", spk, vs)
                                            for t, spk in zip(df.loc[sdh, "text"], df.loc[sdh, "speaker_id"])]
         frames.append(df.drop(columns=["lab_speaker", "source", "confidence"]))
@@ -205,9 +225,14 @@ def fit_entry(g: pd.DataFrame, speaker_id: str, domain: str, as_of: int, k: int,
 
 
 def build_bank(settings: Settings, con: sqlite3.Connection, vs: str, episodes: list[int], variant: str | None = None,
-               model: str | None = None, as_of: int | None = None, write: bool = True, resolver=None) -> dict:
+               model: str | None = None, as_of: int | None = None, write: bool = True, resolver=None,
+               use_auto: bool | None = None) -> dict:
     """Fit the bank for `vs` from the labelled utterances of `episodes`, stored as as_of_episode = as_of
-    (default: max(episodes)). Returns stats incl. the dropped (inconsistent) utterances for inspection."""
+    (default: max(episodes)). Returns stats incl. the dropped (inconsistent) utterances for inspection.
+
+    `use_auto` (default: config bank.use_auto_labels, false): also learn from confident auto labels. Off by default
+    because the bank is refit as a season goes on: an auto label the bank got wrong would become part of that
+    player's voice and make the next wrong call likelier. Human, name-card and caption-name labels are always used."""
     t0 = time.time()
     variant = variant or settings.audio.variant
     model = model or settings.embed.model
@@ -215,7 +240,10 @@ def build_bank(settings: Settings, con: sqlite3.Connection, vs: str, episodes: l
     bcfg = settings.raw.get("bank", {})
     k = int(bcfg.get("exemplars_per_speaker", 20))
     half_life = float(bcfg.get("recency_half_life_episodes", 3))
-    df = collect_labelled(settings, con, vs, episodes, variant, model, resolver=resolver)
+    if use_auto is None:
+        use_auto = bool(bcfg.get("use_auto_labels", False))
+    df = collect_labelled(settings, con, vs, episodes, variant, model, resolver=resolver,
+                          auto_min_conf=None if use_auto else float("inf"))
     if df.empty:
         raise LookupError(f"no labelled utterances in {vs} episodes {episodes}")
     mentioned = df[df.self_mention].copy()
@@ -229,6 +257,16 @@ def build_bank(settings: Settings, con: sqlite3.Connection, vs: str, episodes: l
         if dom not in DOMAINS:
             continue
         entries.append(fit_entry(g, spk, dom, as_of, k, half_life))
+    borrowed: dict[str, str] = {}
+    if bool(bcfg.get("borrow_host", True)):
+        host_id = settings.franchise_for(vs).host_id
+        con.row_factory = sqlite3.Row
+        have = {e.domain for e in entries if e.speaker_id == host_id}
+        for e, src in borrow_host_entries(con, vs, host_id, variant, model, have):
+            entries.append(e)
+            borrowed[e.domain] = src
+        if borrowed:
+            log.info("%s: host voice borrowed from %s", vs, borrowed)
     if write:
         con.execute("DELETE FROM speaker_bank WHERE version_season=? AND as_of_episode=?", (vs, as_of))
         for e in entries:
@@ -238,7 +276,8 @@ def build_bank(settings: Settings, con: sqlite3.Connection, vs: str, episodes: l
                    n_utts, dim, variant, model, total_dur_s, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (vs, e.speaker_id, e.domain, as_of, e.centroid.tobytes(), e.exemplars.tobytes(), e.n_utts,
                  int(e.centroid.shape[0]), variant, model, e.total_dur_s,
-                 json.dumps({"episodes": episodes, "utt_ids": ids, "k": int(len(e.exemplars))})))
+                 json.dumps({"episodes": episodes, "utt_ids": ids, "k": int(len(e.exemplars)),
+                            **({"borrowed_from": borrowed[e.domain]} if e.domain in borrowed and not ids else {})})))
         con.commit()
     per = (kept.groupby(["speaker_id", "domain_hint"]).agg(n=("utt_id", "size"), dur=("dur", "sum"))
                .reset_index().pivot(index="speaker_id", columns="domain_hint", values=["n", "dur"]).fillna(0))
@@ -246,13 +285,34 @@ def build_bank(settings: Settings, con: sqlite3.Connection, vs: str, episodes: l
         "version_season": vs, "episodes": episodes, "as_of": as_of, "variant": variant, "model": model,
         "n_labelled": int(len(df) + len(mentioned)), "n_kept": int(len(kept)), "n_dropped": int(len(dropped)),
         "n_self_mention": int(len(mentioned)),
-        "n_speakers": int(kept.speaker_id.nunique()), "n_entries": len(entries),
+        "n_speakers": int(kept.speaker_id.nunique()), "n_entries": len(entries), "host_borrowed": borrowed,
+        "use_auto": use_auto,
         "sources": df.label_source.value_counts().to_dict(), "per_speaker": per, "dropped": dropped,
         "seconds": round(time.time() - t0, 1),
     }
     log.info("%s bank as of E%02d: %d speakers, %d entries from %d labelled utts (%d dropped as inconsistent) in %.1fs",
              vs, as_of, stats["n_speakers"], len(entries), len(df), len(dropped), stats["seconds"])
     return stats
+
+
+def borrow_host_entries(con: sqlite3.Connection, vs: str, host_id: str, variant: str, model: str,
+                        have: set[str]) -> list[tuple[BankEntry, str]]:
+    """The host's voice is the same in every season: for each domain this season's labels did not give him an entry
+    (S21-39 captions never name him and he gets no name card), take the entry with the most utterances from another
+    season of the franchise, same audio variant and embedding model. Returns (entry, season it came from)."""
+    out = []
+    for dom in DOMAINS:
+        if dom in have:
+            continue
+        r = con.execute("""SELECT * FROM speaker_bank WHERE speaker_id=? AND domain=? AND version_season<>? AND variant=? AND model=?
+                           ORDER BY n_utts DESC, as_of_episode DESC LIMIT 1""", (host_id, dom, vs, variant, model)).fetchone()
+        if r is None:
+            continue
+        d = int(r["dim"])
+        c = np.frombuffer(r["centroid"], dtype=np.float32)
+        ex = np.frombuffer(r["exemplars"], dtype=np.float32).reshape(-1, d) if r["exemplars"] else np.zeros((0, d), np.float32)
+        out.append((BankEntry(host_id, dom, c, ex, int(r["n_utts"] or 0), float(r["total_dur_s"] or 0.0)), r["version_season"]))
+    return out
 
 
 def load_bank(con: sqlite3.Connection, vs: str, as_of: int | None = None) -> tuple[dict[tuple[str, str], BankEntry], int | None]:

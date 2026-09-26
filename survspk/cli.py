@@ -183,6 +183,40 @@ def grab_frame_cmd(version_season: str, episode: int, t_s: float,
     rprint(f"wrote {p}")
 
 
+@app.command()
+def chyron(version_season: str, episode: int,
+           write_labels: bool = typer.Option(True, help="--no-write-labels: store hits and scenes, touch no labels"),
+           backend: Optional[str] = typer.Option(None, help="apple-vision | tesseract (default: config models.ocr)"),
+           fps: Optional[float] = typer.Option(None), show: int = typer.Option(40),
+           from_cache: bool = typer.Option(False, "--from-cache", help="re-read the raw OCR saved by the last run instead of the video (seconds, for tuning)")) -> None:
+    """OCR the on-screen name cards: one free speaker label per castaway per episode (spec §7.6 step 3)."""
+    from .chyron import ChyronCfg, chyron_episode
+
+    s = load_settings()
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    r = _resolver(s)
+    if r is None:
+        raise typer.BadParameter("survivoR snapshot missing: run refresh-survivor first")
+    cfg = ChyronCfg.from_settings(s)
+    if backend:
+        cfg.backend = backend
+    if fps:
+        cfg.fps = fps
+    st = chyron_episode(s, con, version_season, episode, r, write_labels=write_labels, cfg=cfg, use_cache=from_cache)
+    names = r.bios(version_season, episode)
+    t = Table(title=f"{version_season} E{episode:02d} chyron hits")
+    for col in ("time", "castaway", "ocr text", "score", "conf"):
+        t.add_column(col)
+    for h in con.execute("SELECT * FROM chyron_hits WHERE version_season=? AND episode=? ORDER BY t_s LIMIT ?", (version_season, episode, show)):
+        nm = names.get(h["castaway_id"], {}).get("name", h["castaway_id"])
+        t.add_row(f"{int(h['t_s'] // 60):02d}:{int(h['t_s'] % 60):02d}", f"{nm} ({h['castaway_id']})", (h["ocr_text"] or "")[:40],
+                  f"{h['match_score']:.0f}", f"{(h['ocr_conf'] or 0):.2f}")
+    rprint(t)
+    for uid, c, sd, tt in st["disagreements"]:
+        rprint(f"[yellow]disagrees with SDH at {int(tt // 60):02d}:{int(tt % 60):02d}: chyron {names.get(c, {}).get('name', c)} vs SDH {names.get(sd, {}).get('name', sd)} ({uid})[/yellow]")
+    rprint({k: v for k, v in st.items() if k != "disagreements"})
+
+
 @app.command("missing-subs")
 def missing_subs() -> None:
     """List episodes whose subtitle is missing or truncated (candidates for fetch-subs)."""
@@ -236,7 +270,7 @@ def fetch_subs(version_season: Optional[str] = typer.Option(None, "--season", "-
 
 # ============================================================================= M1: audio stages
 
-STAGES = ["extract", "separate", "align", "segment", "embed"]
+STAGES = ["extract", "separate", "diarize", "align", "segment", "embed"]
 
 
 def _resolver(s):
@@ -309,8 +343,8 @@ def sync_check(version_season: str, episode: Optional[int] = typer.Option(None, 
 
 @app.command()
 def segment(version_season: str, episode: int,
-            force: bool = typer.Option(False, help="re-segment even if human labels exist (they will be lost)")) -> None:
-    """Cues -> turns -> utterances; SDH names; recap/preview."""
+            force: bool = typer.Option(False, help="re-segment even if some human labels cannot be re-anchored by time span (those are dropped)")) -> None:
+    """Cues -> turns -> utterances; SDH names; recap/preview. Human labels are carried over by time span."""
     from .stage_segment import segment_episode
 
     s = load_settings()
@@ -351,14 +385,17 @@ def bank(version_season: str,
          episodes: str = typer.Option(..., help="comma list of episodes whose labels fit the bank, e.g. 1 or 1,2,3"),
          as_of: Optional[int] = typer.Option(None, help="store as as_of_episode (default: max of --episodes)"),
          variant: Optional[str] = typer.Option(None), model: Optional[str] = typer.Option(None),
-         show_dropped: bool = typer.Option(True, help="list utterances dropped as label-inconsistent")) -> None:
-    """Fit the speaker bank (spec §7.9) from explicit SDH / human / chyron / confident-auto labels."""
+         show_dropped: bool = typer.Option(True, help="list utterances dropped as label-inconsistent"),
+         use_auto: Optional[bool] = typer.Option(None, "--use-auto/--no-auto",
+                                                 help="also learn from confident auto labels (default: config bank.use_auto_labels, off)")) -> None:
+    """Fit the speaker bank (spec §7.9) from caption-name, human and name-card labels (and confident auto with --use-auto)."""
     from .stage_bank import build_bank
 
     s = load_settings(version_season)
     con = dbm.init_db(s.db_path, s.sqlite_journal)
     eps = [int(x) for x in episodes.split(",")]
-    st = build_bank(s, con, version_season, eps, variant=variant, model=model, as_of=as_of, resolver=_resolver(s))
+    st = build_bank(s, con, version_season, eps, variant=variant, model=model, as_of=as_of, resolver=_resolver(s),
+                    use_auto=use_auto)
     rprint(f"bank {version_season} as of E{st['as_of']:02d}: {st['n_speakers']} speakers, {st['n_entries']} entries, "
            f"{st['n_kept']} utts kept / {st['n_dropped']} dropped ({st['n_self_mention']} named themselves); "
            f"sources {st['sources']}")
@@ -379,9 +416,12 @@ def bank(version_season: str,
 
 @app.command()
 def assign(version_season: str, episode: int,
-           bank_as_of: Optional[int] = typer.Option(None, help="use the bank stored as of this episode (default: episode-1 or earlier)"),
+           bank_as_of: Optional[int] = typer.Option(None, help="use the bank stored as of this episode (turns off the rolling refit)"),
+           rolling: Optional[bool] = typer.Option(None, "--rolling/--no-rolling",
+                                                  help="refit the bank from every earlier episode's trusted labels first "
+                                                       "(default: config bank.rolling, on unless --bank-as-of)"),
            variant: Optional[str] = typer.Option(None), model: Optional[str] = typer.Option(None),
-           write: bool = typer.Option(True, help="--no-write: score only, touch nothing"),
+           write: bool = typer.Option(True, help="--no-write: score only, touch no labels (a rolling refit still stores its bank)"),
            show: int = typer.Option(30, help="rows of disagreements / queue to print")) -> None:
     """Label an episode's runs from the speaker bank (spec §7.7); report agreement with explicit SDH names."""
     from .stage_assign import assign_episode
@@ -391,14 +431,15 @@ def assign(version_season: str, episode: int,
     con = dbm.init_db(s.db_path, s.sqlite_journal)
     try:
         df, st = assign_episode(s, con, version_season, episode, variant=variant, model=model, bank_as_of=bank_as_of,
-                                resolver=_resolver(s), write=write)
+                                resolver=_resolver(s), write=write, rolling=rolling)
     except StaleEmbeddings as e:
-        rprint(f"[yellow]{e}[/yellow]\n-> re-embedding {version_season} E{episode:02d} ({variant or s.audio.variant}) first")
+        ep_stale = e.ep if e.ep is not None else episode
+        rprint(f"[yellow]{e}[/yellow]\n-> re-embedding {version_season} E{ep_stale:02d} ({variant or s.audio.variant}) first")
         from .stage_embed import embed_episode
-        embed_episode(s, con, version_season, episode, variant=variant, model=model, force=True)
+        embed_episode(s, con, version_season, ep_stale, variant=variant, model=model, force=True)
         df, st = assign_episode(s, con, version_season, episode, variant=variant, model=model, bank_as_of=bank_as_of,
-                                resolver=_resolver(s), write=write)
-    keys = ["bank_as_of", "n_candidates", "n_bankable", "unbankable", "n_runs", "n_split_runs", "decisions",
+                                resolver=_resolver(s), write=write, rolling=rolling)
+    keys = ["bank_as_of", "bank_rolled_from", "n_candidates", "n_bankable", "unbankable", "n_runs", "n_split_runs", "decisions",
             "body_auto_rate", "body_auto_dur_share", "sdh_agreement_runs", "n_sdh_runs", "sdh_agreement_confident",
             "n_sdh_runs_confident", "sdh_agreement_confessional", "n_sdh_runs_confessional",
             "sdh_agreement_confessional_confident", "n_sdh_runs_confessional_confident", "auto_dur_share_confessional",
@@ -419,11 +460,47 @@ def assign(version_season: str, episode: int,
     q = body[body.decision.isin(["low_margin", "no_candidate"]) & body.explicit.isna()].sort_values("dur", ascending=False)
     if len(q):
         _df_table(q[cols], "queued for review (longest first)", max_rows=show)
+    if write and (s.raw.get("split_detect", {}) or {}).get("enabled", True):
+        from .split_detect import suggest_episode
+        sug = suggest_episode(s, con, version_season, episode, resolver=_resolver(s))
+        if sug:
+            n_auto = sum(d["auto"] for d in sug)
+            rprint(f"  two voices in one line: {n_auto} cut automatically and re-assigned, "
+                   f"{len(sug) - n_auto} labelled lines suggested for review")
     rep = s.paths.work_root / "reports"
     rep.mkdir(parents=True, exist_ok=True)
     out = rep / f"assign_{version_season}E{episode:02d}.csv"
     df.to_csv(out, index=False)
     rprint(f"all runs -> {out}")
+
+
+@app.command()
+def diarize(version_season: str, episode: int, force: bool = False) -> None:
+    """Speaker-change track for one episode (Nemotron 3 Diarization), used to suggest splits of two-voice lines."""
+    from .stage_diarize import diarize_episode
+
+    s = load_settings(version_season)
+    p = diarize_episode(s, version_season, episode, force=force)
+    rprint(f"[green]{p}[/green]" if p else "[yellow]diarizer did not run; see the warning above[/yellow]")
+
+
+@app.command()
+def splits(version_season: str, episode: int, show: int = typer.Option(20)) -> None:
+    """Cut lines that sound like two people (diarizer change point) and re-assign; suggest cuts on labelled lines."""
+    from .split_detect import suggest_episode
+    from .stage_diarize import diarize_episode
+
+    s = load_settings(version_season)
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    if diarize_episode(s, version_season, episode) is None:
+        raise typer.Exit(1)
+    sug = suggest_episode(s, con, version_season, episode, resolver=_resolver(s))
+    n_auto = sum(d["auto"] for d in sug)
+    rprint(f"{version_season} E{episode:02d}: {n_auto} lines cut automatically (re-embedded and re-assigned), "
+           f"{len(sug) - n_auto} labelled lines suggested for splitting")
+    for d in [d for d in sug if not d["auto"]][:show]:
+        rprint(f"  {d['utt_id']}  cut {d['t_cut']:.1f}s  {d['left_spk']} -> {d['right_spk']}  "
+               f"(2nd voice {d['second_s']:.1f}s, contrast {d['contrast']:.2f}){'  [human-labelled]' if d['human'] else ''}")
 
 
 @app.command("text-prior")
@@ -501,6 +578,39 @@ def review(port: int = typer.Option(8765), host: str = typer.Option("127.0.0.1")
         raise typer.Exit(1)
     rprint(f"review UI -> http://{host}:{port}   (Ctrl-C to stop)")
     serve(host, port)
+
+
+@app.command("audit-stats")
+def audit_stats_cmd(version_season: str, episode: Optional[int] = typer.Argument(None, help="one episode, or all audited episodes of the season")) -> None:
+    """Precision of the auto labels from the review UI's audit verdicts (a random sample judged by ear)."""
+    from .review_app import create_app  # noqa: F401  (the stats live next to the endpoints)
+    from .review_app import _wilson_low
+
+    s = load_settings()
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    q = "SELECT episode, group_key, pred_speaker, verdict, speaker_id FROM audit_verdicts WHERE version_season=?"
+    args: tuple = (version_season,)
+    if episode is not None:
+        q += " AND episode=?"
+        args = (version_season, episode)
+    rows = pd.read_sql_query(q + " GROUP BY episode, group_key", con, params=args)
+    if rows.empty:
+        rprint("no audit verdicts yet: open `survspk review`, switch the mode to 'audit auto labels'")
+        raise typer.Exit(0)
+    t = Table(title=f"{version_season} auto-label audit")
+    for col in ("episode", "groups", "confirmed", "precision", "95% lower"):
+        t.add_column(col, justify="right")
+    for ep, g in rows.groupby("episode"):
+        k, n = int((g.verdict == "confirm").sum()), len(g)
+        t.add_row(f"E{ep:02d}", str(n), str(k), f"{k / n:.1%}", f"{_wilson_low(k, n):.1%}")
+    k, n = int((rows.verdict == "confirm").sum()), len(rows)
+    t.add_row("all", str(n), str(k), f"{k / n:.1%}", f"{_wilson_low(k, n):.1%}")
+    rprint(t)
+    bad = rows[rows.verdict == "reject"]
+    if len(bad):
+        rprint("rejected, by predicted speaker -> who it was:")
+        for (pred, was), m in bad.groupby(["pred_speaker", "speaker_id"]).size().sort_values(ascending=False).items():
+            rprint(f"  {pred} -> {was}: {m}")
 
 
 @app.command("export-corpus")
@@ -583,6 +693,26 @@ def run_errors_cmd(version_season: str, episode: int,
 
 
 @app.command()
+def backup(keep: int = typer.Option(5, help="how many dated snapshots to keep in db/backups"),
+           export: bool = typer.Option(True, "--export/--no-export", help="also write the text-free export of your labels"),
+           copy_to: Optional[Path] = typer.Option(None, "--copy-to", help="also copy the snapshot and the export here "
+                                                  "(an external drive, iCloud Drive, ...)")) -> None:
+    """Snapshot the database safely (even while the review app runs) and export the work a person did (human labels,
+    checked name cards, audit verdicts, splits) as CSVs with no dialogue text."""
+    from .backup import run_backup
+
+    s = load_settings()
+    r = run_backup(s, keep=keep, export=export, copy_to=copy_to)
+    rprint(f"snapshot: {r.snapshot} ({r.snapshot_mb} MB, quick_check {r.check})")
+    if r.removed:
+        rprint(f"rotated out: {', '.join(p.name for p in r.removed)}")
+    if r.export_dir:
+        rprint(f"export: {r.export_dir}  " + "  ".join(f"{k} {v}" for k, v in r.counts.items()))
+    for p in r.copied_to:
+        rprint(f"copied to {p}")
+
+
+@app.command()
 def run(version_season: str, episode: int,
         through: str = typer.Option("embed", help="last stage to run: " + " | ".join(STAGES)),
         from_stage: str = typer.Option("extract", "--from", help="first stage to run (earlier outputs are reused)"),
@@ -616,6 +746,9 @@ def run(version_season: str, episode: int,
             separate_episode(s, con, vs, ep, source="raw", force=f("separate"))
         if "vocals_center" in want and have_center:
             separate_episode(s, con, vs, ep, source="center", force=f("separate"))
+    if do("diarize") and (s.raw.get("diarize", {}) or {}).get("enabled", True):
+        from .stage_diarize import diarize_episode
+        diarize_episode(s, vs, ep, force=f("diarize"))              # a failure only skips two-voice suggestions
     if do("align"):
         align_episode(s, con, vs, ep, force=f("align"))
     if do("segment"):

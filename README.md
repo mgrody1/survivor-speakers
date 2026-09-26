@@ -117,6 +117,17 @@ re-embeds first if you split lines), and the runs the fuller bank can now place 
 rounds is typical; what remains is short fragments and overlapping chatter that neither the bank nor the features
 need.
 
+**Audit the auto labels.** The agreement numbers `assign` prints are measured on explicit `NAME:` lines, and those
+belong to the castaways the bank already knows well, so they overstate the auto labels' precision. The UI's
+*audit auto labels* mode draws a stable random sample of 20 auto-labelled runs per episode, spread across the
+predicted speakers; `y` confirms, any other pick corrects. Every verdict is a human label, the header shows the
+precision with a 95% lower bound, and `survspk audit-stats US47` prints it per episode with the confusions.
+Run it once per episode after the review loop; it is the unbiased number to record.
+
+**Re-segmenting a labelled episode.** Human labels are stored with their time span and carried over to the new
+utterances by overlap (`segment` re-anchors them; `--force` drops the ones no new utterance covers). Word-level
+splits do not survive a re-segment.
+
 ```bash
 uv run survspk review                        # http://127.0.0.1:8765  (keys: 1-9, s, a, o, u, x, space, z/↩ undo; click a line to label
                                              #   just that line; ✂ split cuts a line at a word, then part 1 / part 2 are selected in turn)
@@ -143,6 +154,44 @@ picks people the passage names, invents show knowledge, ignores tribe, over-attr
 host. Reliable only on host procedural lines and sentence continuations, which the audio already handles. Kept
 as a research hook (`--eval-only`, `--thinking`, `--model`, `--clear`); `text_prior.use_in_assign` and
 `show_in_review` stay off.
+
+## Chyron OCR — free labels in every era
+
+The on-screen name card (`TEENY / FREELANCE WRITER / LAVO TRIBE`, bottom-left, ~3 s into a castaway's first line)
+is one speaker label per castaway per episode, and the only text label the S21–39 subtitles do not have.
+
+```bash
+uv sync --all-extras                          # adds the `ocr` extra: ocrmac (Apple Vision) + pillow
+uv run survspk chyron US47 2                  # OCR the body, store chyron_hits + scenes, write `chyron` labels
+uv run survspk chyron US47 2 --no-write-labels   # hits only
+```
+
+ffmpeg decodes the body on the video engine, keeps the bottom band, and only frames whose band changed are OCR'd.
+OCR lines on the left are matched against the cast present (rapidfuzz ≥ 85, or one character off on a name of
+four letters or more; occupation on the same line lifts a shaky match); lines in the centre are the show's own
+captions and are ignored; `TRIBE / DAY n` cards go to `scenes`. Each hit labels the utterance that started ~3 s
+before the card. A human label wins; an explicit SDH name that disagrees leaves the SDH label and queues the run as
+`chyron_conflict` (key `c` in the UI takes the chyron's word). On named episodes the command prints agreement with
+the SDH names, which is the OCR's precision check — read it on US47 E01/E02 before trusting it on a `>>` season.
+The bank treats a chyron-anchored run like an SDH-anchored one (`chyron` + `chyron_run`).
+
+**Check the cards (review UI, mode *check name cards*).** A card says who is on screen, not which line they speak;
+the automatic anchor is right about three times in four, and one wrong card teaches the bank the wrong voice. For each
+card the UI shows the frame just after it appears, the card text, and the lines from 8 s before to 4 s after it (the
+automatic pick marked). Press the number of the line the carded castaway speaks, or `0` for none of them. The answer
+is stored in `card_checks` and becomes a `chyron` label at confidence 1.0; re-runs of `survspk chyron` keep it; a
+human label on the line still wins; `z` undoes. When every card is checked, *refit & reassign* builds the bank from
+them and switches to the queue sorted thin-first, for castaways who never got a usable card.
+
+For a season whose captions name nobody (S21-39):
+
+```bash
+uv run survspk run US25 1 && uv run --with ocrmac survspk chyron US25 1     # repeat for E02, E03
+uv run survspk review                                                        # mode: check name cards, E01..E03
+#   check every card -> refit & reassign -> label the castaways the coverage panel calls thin -> audit
+```
+
+`survspk chyron VS EP --from-cache` replays the saved raw OCR in seconds (after changing the matcher or filters).
 
 ## Corpus export and fine-tuning (see `docs/CORPUS.md`)
 

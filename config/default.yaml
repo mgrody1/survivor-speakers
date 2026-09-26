@@ -75,6 +75,15 @@ align:
   max_lag_s: 90
   apply_min_offset_s: 0.25
   device: mps
+  anchor: always               # cue times from faster-whisper words matched to cue words (never = envelope only)
+  anchor_model: small.en       # faster-whisper model: about 7 min per hour of audio on CPU; cached in reports/align
+  # mlx: the same small.en on the Apple GPU with the same Silero VAD, about 75 s per hour (scripts/asr_mlx.py, run in a
+  # throwaway `uv run --no-project` env; falls back to faster-whisper if it fails). Against the median of four other
+  # transcripts its cue starts were off by > 1 s for 0.8-1.1% of cues vs 1.0-3.1% for the CPU path (US31 E01, US44
+  # E09, US46 E03; scripts/asr_backend_eval.py). large-v3-turbo hears 3-5% more cues but starts them ~50 ms early.
+  anchor_backend: mlx
+  anchor_mlx_model: mlx-community/whisper-small.en-mlx
+  anchor_min_share: 0.3        # share of cue starts ASR must hear, else the envelope fit is kept
 
 segment:
   merge_gap_s: 0.8
@@ -100,11 +109,42 @@ thresholds:                    # assign (spec §7.7.5), on cosine to the bank
   floor: 0.35
   bank_min_confidence: 0.60
   purity_min_s: 1.0            # utterances shorter than this do not vote when a run is checked for a speaker change
+  auto_min_s: 2.0              # a group with less speech than this gets no auto label (audits: most misses were sub-2 s)
+  voice_split: true            # cut out lines whose own voice clearly prefers another speaker (two people in one run)
+  voice_split_margin: 0.08     # ... by at least this much over the group's speaker
+  voice_split_confident: false # false: the line need not be confident on its own (US45/US47 test: +2-3 points of precision)
 
 bank:
   exemplars_per_speaker: 20
   recency_half_life_episodes: 3
+  rolling: true                # assign refits the bank from every earlier episode first (unless --bank-as-of is given)
+  use_auto_labels: false       # learn only from human, name-card and caption-name labels, never from auto labels
   score_mode: centroid         # centroid | exemplar | blend  (M1: centroid beat nearest-exemplar on US47E02)
+
+diarize:                       # speaker-change track (Nemotron 3 Diarization via scripts/diarize_nemotron.py)
+  enabled: true                # a failure only skips the two-voice suggestions
+  variant: vocals
+
+split_detect:                  # lines that sound like two people -> suggested split, queued as two_voices
+  enabled: true
+  min_utt_s: 2.5
+  min_second_s: 0.8            # diarizer hears the second voice at least this long inside the line
+  min_contrast: 0.2            # and the bank names the two sides as different people this clearly
+  auto: true                   # cut automatically (lines without a human / name-card label), then re-assign
+  auto_second_s: 0.5           # second voice at least this long inside the line
+  auto_side_s: 0.5             # each part at least this long
+
+chyron:                        # on-screen name cards -> `chyron` labels (survspk chyron)
+  fps: 2                       # frames sampled per second across the body; cards stay up ~4 s
+  diff_threshold: 6            # skip a frame whose band barely changed since the last OCR'd one (mean |delta|, 0-255)
+  min_match: 85                # rapidfuzz ratio a name line must reach against the cast present
+  dedupe_s: 10                 # one hit per castaway per this many seconds
+  anchor_before_s: 6           # the card belongs to the utterance that started within [t-6, t+1] s ...
+  anchor_after_s: 1
+  anchor_ideal_s: 3            # ... ideally ~3 s before it (the card follows the first line)
+  anchor: overlap              # overlap = the line most on air while the card is up (93% on US47 E01-03); start = the rule above (88%)
+  left_frac: 0.62              # OCR lines starting right of this fraction of the band are the show's own captions
+  hwaccel: videotoolbox        # ffmpeg decode on the Apple video engine; null to decode on CPU
 
 franchises:
   US:

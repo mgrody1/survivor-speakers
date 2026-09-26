@@ -79,6 +79,11 @@ class AlignCfg(BaseModel):
     max_lag_s: float = 90.0
     apply_min_offset_s: float = 0.25        # below this, treat the subtitle as already in sync
     device: str = "mps"
+    anchor: str = "always"                  # ASR-anchored time map: always | never (envelope fit only)
+    anchor_model: str = "small.en"          # faster-whisper model; the words are cached under reports/align
+    anchor_backend: str = "mlx"             # mlx (Apple GPU, scripts/asr_mlx.py) | faster-whisper (CPU)
+    anchor_mlx_model: str = "mlx-community/whisper-small.en-mlx"
+    anchor_min_share: float = 0.3           # share of cue starts ASR must hear, else the envelope fit is kept
 
 
 class SegmentCfg(BaseModel):

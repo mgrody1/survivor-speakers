@@ -187,6 +187,48 @@ CREATE TABLE IF NOT EXISTS name_tokens (
     resolution     TEXT,               -- cast | host | stop | alias | unresolved
     PRIMARY KEY (version_season, token)
 );
+
+CREATE TABLE IF NOT EXISTS audit_verdicts (
+    -- human verdicts on a random sample of auto-labelled runs (review UI audit mode): auto-label precision
+    utt_id         TEXT PRIMARY KEY,
+    version_season TEXT NOT NULL,
+    episode        INTEGER NOT NULL,
+    run_id         INTEGER,
+    group_key      TEXT,               -- first utt_id of the audited group; one verdict per group
+    pred_speaker   TEXT,
+    pred_score     REAL,
+    verdict        TEXT NOT NULL,      -- confirm | reject
+    speaker_id     TEXT,               -- the human's answer (== pred_speaker on confirm)
+    prev_label     TEXT,               -- json of the auto label row the verdict replaced (restored on undo)
+    created_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS audit_ep ON audit_verdicts(version_season, episode);
+
+CREATE TABLE IF NOT EXISTS split_suggestions (
+    -- lines that sound like two people (survspk.split_detect): where the voice changes and who each side is
+    utt_id         TEXT PRIMARY KEY,
+    version_season TEXT NOT NULL,
+    episode        INTEGER NOT NULL,
+    t_cut          REAL NOT NULL,      -- audio seconds
+    left_spk       TEXT,
+    right_spk      TEXT,
+    second_s       REAL,               -- seconds the second voice holds inside the line (diarizer)
+    contrast       REAL,               -- bank: how clearly the two sides are different people
+    status         TEXT DEFAULT 'open',-- open | accepted | dismissed
+    created_at     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS card_checks (
+    -- review UI "check name cards": which line near a name card the carded castaway speaks. `survspk chyron`
+    -- re-runs keep these instead of re-anchoring the card by time.
+    version_season TEXT NOT NULL,
+    episode        INTEGER NOT NULL,
+    t_s            REAL NOT NULL,      -- the card (chyron_hits.t_s)
+    castaway_id    TEXT NOT NULL,
+    utt_id         TEXT,               -- the line they speak; NULL = none of the lines near the card
+    created_at     TEXT,
+    PRIMARY KEY (version_season, episode, t_s, castaway_id)
+);
 """
 
 
@@ -211,11 +253,41 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "total_dur_s": "REAL",
         "payload": "TEXT",                 # json: exemplar utt_ids, episodes used, dropped-as-inconsistent count
     },
+    "chyron_hits": {
+        "t_end_s": "REAL",                 # last sampled frame that still showed the card
+    },
+    "card_checks": {
+        "utt_ids": "TEXT",                 # json list: every line the carded castaway speaks (utt_id = the first)
+    },
     "labels": {
         "run_id": "INTEGER",               # run the utterance was scored in (assign pools runs)
         "margin": "REAL",
+        # where the label sits in the episode, so it can be re-anchored after a re-segment (utt ids are positional)
+        "version_season": "TEXT",
+        "episode": "INTEGER",
+        "start_s": "REAL",
+        "end_s": "REAL",
+        "text": "TEXT",
     },
 }
+
+LABEL_SPAN_SQL = """UPDATE labels SET
+    version_season = (SELECT version_season FROM utterances u WHERE u.utt_id = labels.utt_id),
+    episode        = (SELECT episode        FROM utterances u WHERE u.utt_id = labels.utt_id),
+    start_s        = (SELECT start_s        FROM utterances u WHERE u.utt_id = labels.utt_id),
+    end_s          = (SELECT end_s          FROM utterances u WHERE u.utt_id = labels.utt_id),
+    text           = (SELECT text           FROM utterances u WHERE u.utt_id = labels.utt_id)
+    WHERE start_s IS NULL AND utt_id IN (SELECT utt_id FROM utterances)"""
+
+
+def backfill_label_spans(con: sqlite3.Connection) -> int:
+    """Fill the span columns of labels that still lack them. A read-only check first, so a connection that has
+    nothing to fill never takes the write lock."""
+    if con.execute("SELECT 1 FROM labels WHERE start_s IS NULL LIMIT 1").fetchone() is None:
+        return 0
+    n = con.execute(LABEL_SPAN_SQL).rowcount
+    con.commit()
+    return n
 
 
 def migrate(con: sqlite3.Connection) -> list[str]:
@@ -246,6 +318,7 @@ def init_db(path: Path, journal: str = "WAL") -> sqlite3.Connection:
     con.executescript(SCHEMA)
     con.commit()
     migrate(con)
+    backfill_label_spans(con)
     return con
 
 

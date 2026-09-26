@@ -50,6 +50,11 @@ def test_episode_list_and_queue_groups(client, monkeypatch):
     g = next(g for g in groups if "I'm 59" in " ".join(u["text"] for u in g["utts"]))
     assert len(g["utt_ids"]) == 3 and g["dur"] > 14 and g["audio_top"] and g["before"] and g["after"]
     assert g["before"][-1]["speaker"] and g["after"][0]["speaker"]          # neighbours carry their labels
+    # "maybe": who each group could be, by the coverage panel's rule, with the audio rank (0 = captions only)
+    for x in groups:
+        assert {t[0] for t in x["audio_top"]} <= set(x["maybe"])
+        assert all(1 <= x["maybe"][sid] <= k + 1 for k, (sid, _, _) in enumerate(x["audio_top"]))   # best rank over the lines
+    assert groups[0]["maybe"]["S_A"] in (0, 1, 2, 3, 4, 5)                  # the SDH name of the conflict is in it
 
 
 def test_clip_is_wav_slice(client, monkeypatch):
@@ -172,3 +177,133 @@ def test_coverage_and_refit_loop(client):
     assign_episode(s, con, "US99", 2, variant="vocals", bank_as_of=2, resolver=r, write=True)
     lab2 = pd.read_sql_query("SELECT * FROM labels WHERE utt_id IN (%s)" % ",".join("?" * len(g["utt_ids"])), con, params=g["utt_ids"])
     assert (lab2.source == "human").all()
+
+
+def test_human_labels_carry_their_span(client):
+    c, r = client
+    con = c._con
+    q = c.get("/api/queue/US99/2").json()
+    g = next(g for g in q["groups"] if "I'm 59" in " ".join(u["text"] for u in g["utts"]))
+    c.post("/api/label", json={"utt_ids": g["utt_ids"][:1], "speaker_id": "S_D"})
+    lab = con.execute("SELECT * FROM labels WHERE utt_id=?", (g["utt_ids"][0],)).fetchone()
+    u = con.execute("SELECT * FROM utterances WHERE utt_id=?", (g["utt_ids"][0],)).fetchone()
+    assert lab["version_season"] == "US99" and lab["episode"] == 2
+    assert lab["start_s"] == u["start_s"] and lab["end_s"] == u["end_s"] and lab["text"] == u["text"]
+    # labels written by assign get their span on the next init_db / assign
+    assert con.execute("SELECT COUNT(*) FROM labels WHERE start_s IS NULL").fetchone()[0] == 0
+
+
+def test_audit_sample_and_verdicts(client):
+    """The audit sample is stable, spread over predicted speakers, and shrinks as verdicts come in; a confirm
+    keeps the auto speaker, a reject writes the corrected one; both become human labels; undo clears the verdict."""
+    c, r = client
+    con = c._con
+    a = c.get("/api/audit/US99/2?n=50").json()
+    assert a["groups"] and all(g["pred"] and g["reasons"] == ["audit"] for g in a["groups"])
+    assert all(g["audio_top"][0][0] == g["pred"] for g in a["groups"])
+    assert a["stats"]["n"] == 0 and a["stats"]["precision"] is None
+    # every audited utterance is an auto label
+    src = {r_["utt_id"]: r_["source"] for r_ in con.execute("SELECT utt_id, source FROM labels")}
+    assert all(src[u] == "auto" for g in a["groups"] for u in g["utt_ids"])
+    # stable across calls
+    assert [g["utt_ids"] for g in c.get("/api/audit/US99/2?n=50").json()["groups"]] == [g["utt_ids"] for g in a["groups"]]
+    g0 = a["groups"][0]
+    res = c.post("/api/audit_verdict", json={"utt_ids": g0["utt_ids"], "speaker_id": g0["pred"],
+                                             "pred_speaker": g0["pred"], "pred_score": g0["pred_score"]}).json()
+    assert res["verdict"] == "confirm" and res["stats"]["n"] == 1 and res["stats"]["precision"] == 1.0
+    lab = {r_["utt_id"]: dict(r_) for r_ in con.execute("SELECT * FROM labels")}
+    assert all(lab[u]["source"] == "human" and lab[u]["speaker_id"] == g0["pred"] for u in g0["utt_ids"])
+    assert c.get("/api/audit/US99/2?n=1").json()["groups"] == []          # a sample of 1 is done after 1 verdict
+    a2 = c.get("/api/audit/US99/2?n=50").json()
+    assert g0["utt_ids"] not in [g["utt_ids"] for g in a2["groups"]] and a2["stats"]["n"] == 1
+    if a2["groups"]:
+        g1 = a2["groups"][0]
+        res = c.post("/api/audit_verdict", json={"utt_ids": g1["utt_ids"], "speaker_id": "S_C",
+                                                 "pred_speaker": g1["pred"], "pred_score": g1["pred_score"]}).json()
+        assert res["verdict"] == ("confirm" if g1["pred"] == "S_C" else "reject")
+        st = c.get("/api/audit_stats/US99/2").json()
+        assert st["n"] == 2 and 0 <= st["wilson_low"] <= st["precision"] <= 1
+        assert g1["pred"] in st["per_speaker"]
+    # undo removes the verdict and the human label
+    c.post("/api/unlabel", json={"utt_ids": g0["utt_ids"]})
+    st = c.get("/api/audit_stats/US99/2").json()
+    assert st["n"] == (1 if a2["groups"] else 0)
+    assert g0["utt_ids"] in [g["utt_ids"] for g in c.get("/api/audit/US99/2?n=50").json()["groups"]]
+    # a refit re-runs assign; the confirmed/rejected labels are human now and survive it
+    if a2["groups"]:
+        c.post("/api/refit", json={"vs": "US99", "ep": 2})
+        assert all(r_["source"] == "human" for r_ in con.execute(
+            "SELECT source FROM labels WHERE utt_id IN (%s)" % ",".join("?" * len(g1["utt_ids"])), g1["utt_ids"]))
+
+
+def test_voice_samples_context_times_and_refit_changes(client):
+    """Voice samples come from trusted lines (a person's, a card's, an explicit caption name); neighbours carry their
+    times for 'play with the line before'; a refit reports what it changed."""
+    c, r = client
+    q = c.get("/api/queue/US99/2").json()
+    g = next(g for g in q["groups"] if "I'm 59" in " ".join(u["text"] for u in g["utts"]))
+    assert all("start_s" in x and "end_s" in x for x in g["before"] + g["after"])
+    assert c.get("/api/voice/US99/2/S_D").json()["samples"] == []           # nobody has vouched for S_D yet
+    c.post("/api/label", json={"utt_ids": g["utt_ids"], "speaker_id": "S_D"})
+    v = c.get("/api/voice/US99/2/S_D?n=2").json()
+    assert len(v["samples"]) == 2 and {x["source"] for x in v["samples"]} == {"human"} and v["n_available"] == 3
+    assert all(x["utt_id"] in g["utt_ids"] and x["ep"] == 2 for x in v["samples"])
+    sa = c.get("/api/voice/US99/2/S_A").json()["samples"]                   # explicit caption names count too
+    assert sa and all(x["source"] in ("caption name", "human", "chyron") for x in sa)
+    res = c.post("/api/refit", json={"vs": "US99", "ep": 2}).json()
+    ch = res["changes"]
+    assert set(ch) == {"n_flipped", "n_new", "n_dropped", "flips"} and ch["n_flipped"] == len(ch["flips"])
+    assert all(f["old"] != f["new"] and f["new_source"] != "human" for f in ch["flips"])
+
+
+def test_diar_strip_renumbers_voices_by_presence(client):
+    c, r = client
+    s = c._s
+    from survspk.stage_diarize import diar_path
+    q = c.get("/api/queue/US99/2").json()
+    g = q["groups"][0]
+    a, b = g["start_s"], g["end_s"]
+    assert c.get(f"/api/diar/US99/2?start={a}&end={b}").json()["ch"] == []  # not diarized: empty strip
+    dom = np.full(40000, -1, np.int8)
+    m = a + 0.7 * (b - a)
+    dom[int(a * 100):int(m * 100)] = 3                                       # channel 3 most of the line ...
+    dom[int(m * 100):int(b * 100)] = 1                                       # ... then channel 1
+    p = diar_path(s, "US99", 2)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(p, starts=np.array([0.0]), lens=np.array([40000]), dom=dom, pmax=np.zeros(40000, np.uint8))
+    d = c.get(f"/api/diar/US99/2?start={a}&end={b}").json()
+    ch = d["ch"]
+    assert d["step"] == pytest.approx(0.05) and set(ch) <= {0, 1, -1}
+    assert ch[0] == 0 and ch[-1] == 1                                        # the most heard voice is 0
+    j = next(k for k, x in enumerate(ch) if x == 1)
+    assert d["t0"] + j * d["step"] == pytest.approx(m, abs=0.1)
+
+
+def test_bulk_confirm_and_undo(client):
+    c, r = client
+    con = c._con
+    spk = con.execute("""SELECT l.speaker_id, COUNT(*) FROM labels l JOIN utterances u USING (utt_id)
+                         WHERE u.episode=2 AND u.segment='body' AND l.source='auto' GROUP BY 1 ORDER BY 2 DESC""").fetchone()[0]
+    pv = c.get(f"/api/bulk_confirm/US99/2?speaker_id={spk}&min_confidence=0").json()
+    assert pv["n"] == pv["n_auto"] > 0
+    assert c.get(f"/api/bulk_confirm/US99/2?speaker_id={spk}&min_confidence=1.01").json()["n"] == 0
+    before = {r_[0]: r_[1] for r_ in con.execute("SELECT utt_id, confidence FROM labels WHERE source='auto' AND speaker_id=?", (spk,))}
+    res = c.post("/api/bulk_confirm", json={"vs": "US99", "ep": 2, "speaker_id": spk, "min_confidence": 0}).json()
+    assert res["n"] == pv["n"] and set(res["utt_ids"]) <= set(before)
+    rows = con.execute("SELECT source, top_candidates FROM labels WHERE utt_id IN (%s)" % ",".join("?" * res["n"]), res["utt_ids"]).fetchall()
+    assert all(x[0] == "human" and '"bulk:confirm"' in x[1] for x in rows)
+    assert c.post("/api/bulk_unconfirm", json={"utt_ids": res["utt_ids"]}).json()["n"] == res["n"]
+    after = {r_[0]: r_[1] for r_ in con.execute("SELECT utt_id, confidence FROM labels WHERE source='auto' AND speaker_id=?", (spk,))}
+    assert after == before
+
+
+def test_line_frame_needs_the_video(client):
+    c, r = client
+    assert c.get("/api/line_frame/US99/2?t=12.3").status_code == 404
+
+
+def test_two_voices_dismiss_takes_a_json_body(client):
+    """Its body model used to live inside create_app, where FastAPI could not resolve it and asked for a query param."""
+    c, r = client
+    uid = c._ids[0][0]
+    assert c.post("/api/two_voices/dismiss", json={"utt_id": uid}).status_code == 200

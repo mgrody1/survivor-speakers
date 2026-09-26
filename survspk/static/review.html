@@ -7,21 +7,39 @@
 <style>
   :root { --bg:#111417; --panel:#1a1f24; --ink:#e8e6e1; --dim:#9aa3ad; --accent:#f2b134; --ok:#5fbf7a; --warn:#e06c5c; --line:#2a3138; }
   * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; }
-  header { display:flex; gap:16px; align-items:center; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
+  header { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
   header h1 { font-size:16px; margin:0; letter-spacing:.04em; color:var(--accent); }
   header button:disabled { opacity:.4; cursor:default; }
   header select, header button, .btn { background:#22282f; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
   header .spacer { flex:1; }
-  header .count { color:var(--dim); }
+  header .count { color:var(--dim); white-space:nowrap; }
+  header .count:empty { display:none; }
+  #undo { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #refit { white-space:nowrap; }
   main { display:grid; grid-template-columns: 1fr 340px; gap:18px; padding:18px; max-width:1400px; margin:0 auto; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
   .meta { color:var(--dim); font-size:13px; display:flex; gap:14px; flex-wrap:wrap; }
   .reason { color:var(--accent); font-weight:600; }
-  .reason.sdh_conflict { color:var(--warn); }
+  .reason.sdh_conflict, .reason.chyron_conflict { color:var(--warn); }
+  .reason.audit { color:var(--ok); }
+  .autolab { font-size:14px; margin:6px 0 0; color:var(--dim); }
+  .autolab b { color:var(--ok); }
   .ctx { color:var(--dim); font-size:14px; margin:6px 0; }
   .ctx b { color:var(--ink); font-weight:600; }
-  .stale { color:var(--warn); font-size:12px; }
+  #refit .tag { display:inline-block; margin-left:6px; padding:0 6px; border-radius:4px; background:#3a2622; color:var(--warn); font-size:12px; }
+  .banner { grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; padding:12px 16px; border-radius:10px;
+            border:1px solid var(--ok); background:#17241c; font-size:15px; }
+  .banner.focus { border-color:var(--accent); background:#262117; }
+  .banner .msg { flex:1; min-width:260px; }
+  .banner .msg small { display:block; color:var(--dim); font-size:13px; margin-top:2px; }
+  .banner button { background:#22282f; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; }
+  .banner button.primary { background:var(--ok); border-color:var(--ok); color:#0d1a12; font-weight:600; }
+  .banner button:disabled { opacity:.5; cursor:default; }
+  .could { color:var(--warn); }
+  .cov .show { color:var(--accent); cursor:pointer; margin-left:6px; white-space:nowrap; }
+  .cov .show:hover { text-decoration:underline; }
   .passage { font-size:17px; line-height:1.5; margin:10px 0 14px; }
   audio { width:100%; margin:8px 0 4px; }
 
@@ -47,6 +65,10 @@
   .utt .w[data-k="0"] { cursor:default; }
   .utt .w:not([data-k="0"]):hover { border-left-color:var(--warn); background:#2a3138; }
   .splithint { color:var(--warn); font-size:13px; margin:-2px 0 8px 13px; }
+  .tvhint { color:var(--warn); font-size:13px; margin:-2px 0 8px 13px; }
+  .tvhint .tvok, .tvhint .tvno { cursor:pointer; text-decoration:underline; margin-left:6px; }
+  .reason.two_voices { color:var(--warn); }
+  .autosplit { color:var(--warn); cursor:pointer; text-decoration:underline; }
   .selbar { display:flex; align-items:center; gap:10px; color:var(--dim); font-size:13px; margin:2px 0 10px; min-height:22px; }
   .selbar b { color:var(--ink); }
   .selbar .chip { border:1px solid var(--line); border-radius:6px; padding:1px 8px; cursor:pointer; color:var(--ink); }
@@ -98,36 +120,117 @@
   .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#22282f; border:1px solid var(--line); padding:8px 14px; border-radius:8px; color:var(--ink); opacity:0; transition:opacity .2s; }
   .toast.show { opacity:1; }
   .tp-reason { color:var(--dim); font-size:13px; margin:2px 0 0 36px; }
+  /* card check */
+  body.cardmode .labelonly { display:none !important; }
+  .cardhead { display:flex; gap:16px; align-items:flex-start; margin:8px 0 6px; }
+  .cardhead img.frame { width:340px; max-width:48%; aspect-ratio:16/9; object-fit:cover; border-radius:8px; background:#000; flex:none; }
+  .cardhead .ocr { font:600 17px ui-monospace, Menlo, monospace; letter-spacing:.04em; color:var(--ink); }
+  .cardhead .who { font-size:20px; margin:4px 0 6px; }
+  .cardhead .who b { color:var(--accent); }
+  .cardhead .ask { color:var(--dim); font-size:14px; line-height:1.5; }
+  .cline { display:flex; align-items:baseline; gap:10px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; margin:5px 0; cursor:pointer; }
+  .cline:hover { border-color:var(--accent); }
+  .cline .key { min-width:24px; height:24px; border-radius:6px; background:#2a3138; display:grid; place-items:center; font-weight:700; color:var(--accent); font-size:13px; flex:none; align-self:center; }
+  .cline .t { color:var(--dim); font-size:12px; flex:none; width:64px; }
+  .cline .play { color:var(--dim); font-size:12px; cursor:pointer; flex:none; padding:0 3px; border-radius:4px; }
+  .cline .play:hover { color:var(--accent); background:#2a3138; }
+  .cline .txt { flex:1; }
+  .cline .lab { color:var(--dim); font-size:12px; white-space:nowrap; }
+  .cline .sug { color:var(--dim); font-size:11px; border:1px solid var(--line); border-radius:4px; padding:0 5px; white-space:nowrap; }
+  .cline.ans { border-color:var(--ok); background:#17241c; }
+  .cline.pick { border-color:var(--accent); background:#262117; }
+  .picksave { display:inline-block; margin:8px 8px 0 0; padding:6px 12px; border-radius:6px; cursor:pointer; background:var(--accent); color:#111; font-weight:600; font-size:14px; }
+  .cardline { display:flex; align-items:center; gap:8px; color:var(--accent); font-size:12px; margin:6px 0; }
+  .cardline::before, .cardline::after { content:""; flex:1; border-top:1px dashed var(--accent); opacity:.6; }
+  .cnone { margin-top:10px; display:inline-block; padding:6px 12px; border:1px solid var(--line); border-radius:6px; cursor:pointer; color:var(--dim); font-size:14px; }
+  .cnone:hover { border-color:var(--accent); color:var(--ink); }
+  .cnone.ans { border-color:var(--ok); color:var(--ok); }
+  .cstat { font-size:13px; margin:6px 0 0; color:var(--dim); }
+  .cstat b { color:var(--ok); }
+  .cprog { display:grid; grid-template-columns:1fr auto; gap:3px 10px; font-size:13px; }
+  .cprog .nm { cursor:pointer; }
+  .cprog .nm:hover { text-decoration:underline; }
+  .cprog .h { color:var(--dim); text-align:right; }
+  .cprog .nm.none { color:var(--warn); }
+  .cprog .nm.ok::after { content:" ✓"; color:var(--ok); }
   .done { text-align:center; color:var(--dim); padding:60px 0; font-size:18px; }
+  /* voice samples */
+  .voice { color:var(--dim); cursor:pointer; padding:0 5px; border-radius:4px; font-size:13px; }
+  .voice:hover, .voice.on { color:var(--accent); background:#2a3138; }
+  .grid div .voice { float:right; opacity:0; }
+  .grid div:hover .voice { opacity:1; }
+  /* frames */
+  .frames { display:flex; gap:6px; margin:6px 0 2px; }
+  .frames img { width:calc((100% - 12px) / 3); max-width:260px; aspect-ratio:16/9; object-fit:cover; border-radius:6px; background:#000; }
+  .frames img.gone { display:none; }
+  /* diarizer strip under each line */
+  .dz { display:flex; height:7px; margin:-1px 0 6px 44px; border-radius:3px; overflow:hidden; background:#20262d; cursor:crosshair; position:relative; }
+  .dz i { display:block; height:100%; }
+  .dz .c0 { background:#5b9bd5; } .dz .c1 { background:var(--accent); } .dz .c2 { background:#b07cd8; } .dz .cn { background:transparent; }
+  .dz .mk { position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--ink); display:none; pointer-events:none; }
+  .dz:hover .mk { display:block; }
+  .dzkey { color:var(--dim); font-size:12px; margin:-6px 0 6px; }
+  .dzkey i { display:inline-block; width:10px; height:7px; border-radius:2px; margin:0 3px 0 8px; vertical-align:middle; }
+  /* what the refit changed */
+  .changes { grid-column:1 / -1; }
+  .changes .hd { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .changes .hd .msg { flex:1; }
+  .chg { display:flex; align-items:baseline; gap:8px; padding:6px 4px; border-top:1px solid var(--line); font-size:14px; }
+  .chg .t { color:var(--dim); font-size:12px; flex:none; }
+  .chg .txt { flex:1; color:var(--dim); }
+  .chg .who { white-space:nowrap; }
+  .chg .who s { color:var(--dim); }
+  .chg .b { cursor:pointer; border:1px solid var(--line); border-radius:5px; padding:0 7px; font-size:12px; white-space:nowrap; }
+  .chg .b:hover { border-color:var(--accent); }
+  .chg .play { color:var(--dim); cursor:pointer; font-size:12px; }
+  .chglist { max-height:320px; overflow:auto; margin-top:8px; }
+  /* bulk confirm */
+  .bulk { font-size:13px; line-height:1.6; }
+  .bulk select, .bulk input { background:#0f1215; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:4px 6px; font:inherit; }
+  .bulk input { width:64px; }
+  .bulk .go { display:inline-block; margin-top:6px; padding:5px 10px; border-radius:6px; background:var(--ok); color:#0d1a12; font-weight:600; cursor:pointer; }
+  .bulk .go.off { background:#2a3138; color:var(--dim); cursor:default; }
+  .bulk .h { color:var(--dim); }
 </style>
 </head>
 <body>
 <header>
   <h1>survspk review</h1>
   <select id="episode"></select>
-  <span class="count" id="count"></span>
-  <span class="stale" id="stale"></span>
+  <select id="mode" title="queue: runs assign could not decide · audit: a random sample of runs assign labelled on its own — confirm or correct them, and the precision of the auto labels comes out">
+    <option value="queue">queue</option><option value="audit">audit auto labels</option><option value="cards">check name cards</option></select>
+  <span class="count" id="count" title="open groups (runs of lines) and the lines in them"></span>
+  <span class="count" id="auditstat"></span>
   <span class="spacer"></span>
-  <select id="sort" title="queue order"><option value="value">longest first</option><option value="thin">thin speakers first</option></select>
-  <label class="count"><input type="checkbox" id="vocals"> vocals stem</label>
+  <select id="sort" class="labelonly" title="queue order"><option value="value">longest first</option><option value="thin">thin speakers first</option></select>
+  <label class="count" title="play the separated vocals stem instead of the broadcast mix"><input type="checkbox" id="vocals"> vocals</label>
+  <label class="count" title="play each clip as soon as it loads (space always plays it)"><input type="checkbox" id="autoplay" checked> autoplay</label>
+  <label class="count labelonly" title="stills from the video inside the selected lines (needs the video reachable)"><input type="checkbox" id="showframes" checked> frames</label>
+  <span class="count" id="pace" title="this session on this episode: labelled lines per active minute (pauses over 2 min do not count)"></span>
   <button id="undo" disabled title="undo the last label or split (z)">↩ undo</button>
-  <button id="refit" title="refit the bank from all labels so far (explicit + yours + confident auto) and re-assign this episode; runs the fuller bank can now place leave the queue">refit &amp; reassign</button>
+  <button id="refit" title="refit the bank from all labels so far (caption names + yours + name cards) and re-assign this episode; runs the fuller bank can now place leave the queue">refit &amp; reassign</button>
 </header>
 <main>
+  <div class="banner" id="banner" hidden></div>
+  <section class="card changes" id="changes" hidden></section>
   <section class="card" id="item"><div class="done">loading…</div></section>
   <aside>
     <div class="card">
-      <div class="sub">label as</div>
+      <div class="sub" id="paneltitle">label as</div>
       <div class="selbar" id="selbar"></div>
       <div class="cands" id="cands"></div>
-      <div class="sub">everyone</div>
-      <input class="search" id="search" placeholder="type a name, Enter to label">
-      <div class="grid" id="grid"></div>
-      <div class="pseudo">
+      <div class="sub labelonly">everyone</div>
+      <input class="search labelonly" id="search" placeholder="type a name, Enter to label">
+      <div class="grid labelonly" id="grid"></div>
+      <div class="pseudo labelonly">
         <div data-id="OTHER" title="a real voice that is not a candidate (crew, crowd, unlisted)">other voice · o</div>
         <div data-id="UNKNOWN" title="cannot tell">unknown · u</div>
         <div data-id="NOSPEECH" title="music, effects, silence">no speech · x</div>
       </div>
+    </div>
+    <div class="card" id="bulkcard" style="margin-top:14px" hidden>
+      <div class="sub">confirm in bulk</div>
+      <div class="bulk" id="bulk"></div>
     </div>
     <div class="card" style="margin-top:14px">
       <div class="sub">bank coverage this episode</div>
@@ -140,14 +243,27 @@
     </div>
     <div class="card" style="margin-top:14px">
       <div class="sub">keys</div>
-      <div class="help">
-        <kbd>1</kbd>–<kbd>9</kbd> pick candidate &nbsp; <kbd>s</kbd> SDH name &nbsp; <kbd>a</kbd> audio top-1<br>
+      <div class="help" id="cardhelp" style="display:none">
+        <kbd>1</kbd>–<kbd>9</kbd> the line the person on the card speaks &nbsp; <kbd>0</kbd> none of these lines<br>
+        <b>They speak several lines:</b> <kbd>⌘</kbd>-click or <kbd>⇧</kbd>+number to add a line, <kbd>⇧</kbd>-click for a range;
+        then click the last one, or press <kbd>↩</kbd>, to save them together.<br>
+        <kbd>space</kbd> play all the lines &nbsp; <kbd>→</kbd>/<kbd>n</kbd> skip &nbsp; <kbd>←</kbd> back &nbsp; <kbd>z</kbd> undo<br>
+        The card appears where the dashed line is. The show usually puts it up a few seconds into the person's first line,
+        so the answer is often the line just above it, but not always: listen. The picture is the frame just after the card appears.
+      </div>
+      <div class="help labelonly">
+        <kbd>1</kbd>–<kbd>9</kbd> pick candidate &nbsp; <kbd>s</kbd> SDH name &nbsp; <kbd>c</kbd> chyron &nbsp; <kbd>a</kbd> audio top-1 &nbsp; <kbd>y</kbd> confirm the auto label (audit)<br>
         <kbd>o</kbd> other &nbsp; <kbd>u</kbd> unknown &nbsp; <kbd>x</kbd> no speech &nbsp; <kbd>/</kbd> search<br>
-        <kbd>space</kbd> play selection &nbsp; <kbd>,</kbd> slower &nbsp; <kbd>→</kbd>/<kbd>n</kbd> skip &nbsp; <kbd>←</kbd> back &nbsp; <kbd>z</kbd> undo (also the ↩ button; survives reload)<br>
+        <kbd>space</kbd> play selection &nbsp; <kbd>p</kbd> play it with the line before &nbsp; <kbd>,</kbd> slower &nbsp; <kbd>→</kbd>/<kbd>n</kbd> skip &nbsp; <kbd>←</kbd> back &nbsp; <kbd>z</kbd> undo (also the ↩ button; survives reload)<br>
+        <kbd>⇧</kbd>+<kbd>1</kbd>–<kbd>9</kbd> or <b>♪</b> hear what that person sounds like (a few of their clean lines from this season)<br>
+        <b>Coloured strip under a line:</b> who the diarizer hears (blue = the main voice of the group, orange = a second voice).
+        Click the strip where the colour changes to split the line there.<br>
         <b>Two speakers in one group:</b> click a line to label only that line
         (<kbd>⇧</kbd>-click for a range, <kbd>⌘</kbd>-click to add); <kbd>esc</kbd> = all lines again.<br>
         <b>Two speakers in one line:</b> <kbd>✂ split</kbd> on the line, then click the first word of the second speaker.
-        Part 1 is selected for you; pick its speaker, then part 2 is selected.
+        Part 1 is selected for you; pick its speaker, then part 2 is selected.<br>
+        <b>Audit mode:</b> 20 runs assign labelled on its own, spread over the cast. <kbd>y</kbd> if the voice is who it says;
+        otherwise pick the right person. Every verdict becomes a human label; the precision shows in the header.
       </div>
     </div>
   </aside>
@@ -158,6 +274,14 @@
 const $ = s => document.querySelector(s);
 let data = null, groups = [], i = 0, sel = new Set(), history = [], preload = {};
 let vs = null, ep = null, anchor = null, nextSel = null, pendingB = null, splitting = false;
+let focusId = null, stale = false, markRefit = null, loadToken = 0;
+const mode = () => $('#mode').value;
+const AUDIT_SAMPLE = 20;
+const store = { get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+const nameOf = id => ((data && [...data.candidates, ...data.pseudo].find(c => c.id === id)) || {name: id}).name;
+const shortName = id => nameOf(id).replace(/ \(.*\)$/, '');
+const thinIds = () => new Set((window._cov || []).filter(c => c.status === 'thin').map(c => c.id));
 
 async function api(path, body) {
   const r = await fetch(path, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)} : {});
@@ -171,36 +295,137 @@ async function loadEpisodes() {
   const eps = await api('/api/episodes');
   window._eps = eps;
   const sel = $('#episode');
-  sel.innerHTML = eps.map(e => `<option value="${e.vs}|${e.ep}">${e.vs} E${String(e.ep).padStart(2,'0')} — ${e.n_open} open, ${e.n_done} done</option>`).join('');
+  const cardsMode = mode() === 'cards';
+  const shown = eps.filter(e => cardsMode ? e.n_cards > 0 : (e.n_open + e.n_done) > 0);
+  sel.innerHTML = shown.map(e => `<option value="${e.vs}|${e.ep}">${e.vs} E${String(e.ep).padStart(2,'0')} · ` +
+    (cardsMode ? `${e.n_checked}/${e.n_cards} cards checked` : `${e.n_open} lines open`) + `</option>`).join('');
+  document.body.classList.toggle('cardmode', cardsMode);
+  $('#cardhelp').style.display = cardsMode ? '' : 'none';
   const saved = localStorage.getItem('survspk.ep');
   if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
-  sel.onchange = () => { localStorage.setItem('survspk.ep', sel.value); loadQueue(); };
-  if (eps.length) await loadQueue();
-  else $('#item').innerHTML = '<div class="done">no queue yet — run <kbd>survspk assign</kbd> first</div>';
+  sel.onchange = () => { localStorage.setItem('survspk.ep', sel.value); focusId = null; loadQueue(); };
+  if (shown.length) await loadQueue();
+  else {
+    $('#item').innerHTML = cardsMode
+      ? '<div class="done">no name cards yet<br><small>run <kbd>uv run survspk chyron VS EP</kbd> on an episode first</small></div>'
+      : '<div class="done">no queue yet — run <kbd>survspk assign</kbd> first</div>';
+    $('#cands').innerHTML = ''; $('#banner').hidden = true;
+  }
 }
 
 async function loadQueue() {
+  const token = ++loadToken;
   [vs, ep] = $('#episode').value.split('|'); ep = +ep;
   loadHistory();
-  data = await api(`/api/queue/${vs}/${ep}`);
+  if (mode() === 'cards') return loadCards(token);
+  data = await api(mode() === 'audit' ? `/api/audit/${vs}/${ep}` : `/api/queue/${vs}/${ep}`);
   window._cov = await api(`/api/coverage/${vs}/${ep}`);
+  if (token !== loadToken) return;                          // a newer load started while this one waited
+  if (markRefit && markRefit.vs === vs && markRefit.ep === ep) {   // just refitted: remember how many of your labels it saw
+    store.set(`survspk.refit.${vs}.${ep}`, {humans: humansNow(), at: Date.now()}); markRefit = null;
+  }
   renderCoverage();
   groups = data.groups.filter(g => !g.resolved);
-  if ($('#sort').value === 'thin') {
-    const thin = new Set(window._cov.filter(c => c.status === 'thin').map(c => c.id));
-    const score = g => (g.audio_top.some(([id]) => thin.has(id)) ? 0 : 1);
+  paintAudit(data.stats);
+  paintChanges();
+  paintBulk(data);
+  if (mode() === 'queue' && focusId) {                      // one castaway's likely clips, their best audio rank first
+    const rank = g => { const k = (g.maybe || {})[focusId]; return k ? k : 2.5; };
+    groups = groups.filter(g => focusId in (g.maybe || {})).sort((a, b) => rank(a) - rank(b) || b.dur - a.dur);
+  } else if (mode() === 'queue' && $('#sort').value === 'thin') {
+    const thin = thinIds();
+    const score = g => (Object.keys(g.maybe || {}).some(id => thin.has(id)) ? 0 : 1);
     groups.sort((a, b) => score(a) - score(b) || b.dur - a.dur);
   }
-  const e = (window._eps || []).find(x => x.vs === vs && x.ep === ep);
-  $('#stale').textContent = e && e.stale_embeddings ? 'split lines have no voice vectors yet — refit & reassign re-embeds this episode first (a few minutes)' : '';
+  // the refit builds the bank from episodes 1..ep, so a split line in any of them needs a re-embed first
+  stale = (window._eps || []).some(x => x.vs === vs && x.ep <= ep && x.stale_embeddings);
+  paintRefit();
   i = 0; preload = {};
   renderGrid();
   show();
+  paintBanner(token);
+}
+
+const humansNow = () => (window._cov || []).reduce((n, c) => n + (c.n_human || 0), 0);
+function paintRefit(busy) {
+  const btn = $('#refit');
+  btn.disabled = !!busy;
+  btn.innerHTML = busy ? (stale ? 're-embedding + refitting… (minutes)' : 'refitting…')
+    : 'refit &amp; reassign' + (stale ? '<span class="tag">re-embed</span>' : '');
+  btn.title = 'refit the bank from all labels so far (caption names + yours + name cards) and re-assign this episode; runs the fuller bank can now place leave the queue'
+    + (stale ? '. Some lines were split and have no voice vectors yet, so this re-embeds the episode first (a few minutes).' : '');
+}
+
+// the next step for this episode, above the clip: refit once coverage is done, then the audit, then the next episode
+async function paintBanner(token) {
+  const b = $('#banner'), cov = window._cov || [];
+  let html = '', cls = 'banner';
+  const next = (window._eps || []).find(x => x.vs === vs && x.ep === ep + 1);
+  if (mode() === 'cards') {
+    const cs = cards || [], left = cs.filter(c => !c.checked).length;
+    const per = (window._cardper || []), none = per.filter(p => !p.confirmed);
+    if (!cs.length) html = '';
+    else if (left) {
+      cls += ' focus';
+      html = `<span class="msg"><b>${cs.length - left} of ${cs.length} name cards checked.</b> For each card, pick the line the person on it speaks.` +
+        `<small>One wrong card teaches the wrong voice, so a few seconds per card here saves a lot later.</small></span>`;
+    } else {
+      html = `<span class="msg"><b>All ${cs.length} cards checked.</b> ${per.length - none.length} of ${per.length} castaways have a confirmed line.` +
+        `<small>${none.length ? `No confirmed line yet: ${none.map(p => p.name.replace(/ \(.*\)$/, '')).join(', ')}. After the refit, label a few of their lines in the queue, or check the next episode's cards. ` : ''}Next: refit &amp; reassign builds the voices from these.</small></span>` +
+        `<button class="primary" id="bn-refit">refit &amp; reassign</button>`;
+    }
+  } else if (mode() === 'queue' && focusId) {
+    cls += ' focus';
+    const c = cov.find(x => x.id === focusId);
+    html = `<span class="msg">Showing only the clips that could be <b>${shortName(focusId)}</b>: ${groups.length} left.` +
+      `<small>${c ? `${c.n}/${c.min_utts} lines and ${Math.round(c.secs)}/${c.min_secs} s so far from this episode.` : ''} Their best audio matches come first.</small></span>` +
+      `<button id="bn-all">show the whole queue</button>`;
+  } else if (mode() === 'queue' && cov.length && !cov.some(c => c.status === 'thin')) {
+    const mark = store.get(`survspk.refit.${vs}.${ep}`);
+    if (!mark || mark.humans !== humansNow()) {
+      html = `<span class="msg"><b>E${String(ep).padStart(2, '0')} is done for the bank.</b> Every castaway who talks enough has reached the target, so the rest of the queue can wait.` +
+        `<small>Next: refit &amp; reassign${stale ? '. It re-embeds the split lines first, which takes a few minutes' : ''}. Then audit the auto labels.</small></span>` +
+        `<button class="primary" id="bn-refit">refit &amp; reassign</button>`;
+    } else {
+      let a = null;
+      try { a = await api(`/api/audit/${vs}/${ep}?n=1`); } catch (e) { a = null; }
+      if (token !== loadToken) return;
+      const judged = a ? a.stats.n : 0, done = a && (judged >= AUDIT_SAMPLE || a.n_pool === 0);
+      if (!done) {
+        html = `<span class="msg"><b>Refit done.</b> Next: audit the auto labels.` +
+          `<small>${AUDIT_SAMPLE} clips the model labelled on its own. Press <kbd>y</kbd> when the voice is right, otherwise pick who it is.${judged ? ` ${judged} judged so far.` : ''}</small></span>` +
+          `<button class="primary" id="bn-audit">start the audit</button>`;
+      } else {
+        const st = a.stats, epn = `E${String(ep + 1).padStart(2, '0')}`;
+        html = `<span class="msg"><b>E${String(ep).padStart(2, '0')} is finished.</b> Audit precision ${Math.round(100 * st.precision)}% (at least ${Math.round(100 * st.wilson_low)}% at 95%).` +
+          (next ? `<small>Next: ${epn}.</small></span><button class="primary" id="bn-next">go to ${epn}</button>`
+                : `<small>Next: in Terminal, <kbd>uv run survspk run ${vs} ${ep + 1}</kbd> then <kbd>uv run survspk assign ${vs} ${ep + 1}</kbd>, then reload this page.</small></span>`);
+      }
+    }
+  }
+  if (token !== loadToken) return;
+  b.className = cls; b.innerHTML = html; b.hidden = !html;
+  const on = (id, f) => { const el = $(id); if (el) el.onclick = f; };
+  on('#bn-all', () => { focusId = null; loadQueue(); });
+  on('#bn-refit', () => refit());
+  on('#bn-audit', () => { $('#mode').value = 'audit'; localStorage.setItem('survspk.mode', 'audit'); loadQueue(); });
+  on('#bn-next', () => { $('#mode').value = 'queue'; localStorage.setItem('survspk.mode', 'queue'); $('#episode').value = `${vs}|${ep + 1}`; localStorage.setItem('survspk.ep', $('#episode').value); loadQueue(); });
+}
+function setFocus(id) {
+  focusId = id;
+  if (mode() !== 'queue') { $('#mode').value = 'queue'; localStorage.setItem('survspk.mode', 'queue'); loadEpisodes(); }
+  else loadQueue();
+  scrollTo({top: 0, behavior: 'smooth'});
 }
 
 const variant = () => $('#vocals').checked ? 'vocals' : 'raw';
 function clipUrl(g, a, b) { return `/api/clip/${vs}/${ep}?start=${a ?? g.start_s}&end=${b ?? g.end_s}&variant=${variant()}`; }
-function warm(k) { for (let j = k; j < Math.min(groups.length, k + 3); j++) { const u = clipUrl(groups[j]); if (!preload[u]) { const a = new Audio(); a.preload = 'auto'; a.src = u; preload[u] = a; } } }
+function warm(k) {
+  for (let j = k; j < Math.min(groups.length, k + 3); j++) {
+    const u = clipUrl(groups[j]); if (!preload[u]) { const a = new Audio(); a.preload = 'auto'; a.src = u; preload[u] = a; }
+    if (j < k + 2 && $('#showframes').checked) frameTimes(groups[j].start_s, groups[j].end_s).forEach(t => { const f = frameUrl(t); if (!preload[f]) { const im = new Image(); im.src = f; preload[f] = im; } });
+  }
+}
 function playRange(a, b) { const p = $('#player'); if (!p) return; const u = clipUrl(groups[i], a, b); if (p.getAttribute('src') !== u) p.src = u; p.currentTime = 0; p.play(); }
 function selRange() {
   const g = groups[i]; const us = g.utts.filter(u => sel.has(u.utt_id));
@@ -208,20 +433,37 @@ function selRange() {
 }
 
 function show() {
-  $('#count').textContent = `${groups.length - i} open`;
+  const left = groups.slice(i), nLines = left.reduce((n, g) => n + g.utt_ids.length, 0);
+  $('#paneltitle').textContent = 'label as';
+  $('#count').textContent = mode() === 'audit' ? `${left.length} left in the sample`
+    : `${left.length} group${left.length === 1 ? '' : 's'} · ${nLines} line${nLines === 1 ? '' : 's'}`;
   const box = $('#item');
   splitting = false;
-  if (i >= groups.length) { box.innerHTML = '<div class="done">queue empty for this episode 🎉<br><small>next: <kbd>survspk bank US47 --episodes 1,2</kbd> then assign the next episode</small></div>'; $('#cands').innerHTML = ''; $('#selbar').innerHTML = ''; return; }
+  if (i >= groups.length) {
+    const eps = Array.from({length: ep}, (_, k) => k + 1).join(',');
+    box.innerHTML = mode() === 'audit'
+      ? '<div class="done">audit sample done for this episode<br><small>the precision in the header is the number to record; switch to <b>queue</b> or go to the next episode</small></div>'
+      : focusId
+        ? `<div class="done">no more clips that could be ${shortName(focusId)}<br><small>use <b>show the whole queue</b> above</small></div>`
+        : `<div class="done">queue empty for this episode 🎉<br><small>next: <b>refit &amp; reassign</b>, or in Terminal <kbd>uv run survspk bank ${vs} --episodes ${eps}</kbd> then assign the next episode</small></div>`;
+    $('#cands').innerHTML = ''; $('#selbar').innerHTML = ''; return;
+  }
   const g = groups[i];
   sel = new Set(g.utt_ids); anchor = null;
   if (nextSel) { const want = g.utt_ids.filter(u => nextSel.has(u)); if (want.length) { sel = new Set(want); nextSel = null; } }
   const reasons = g.reasons.map(r => `<span class="reason ${r}">${r}</span>`).join(' ');
+  const watch = thinIds(); if (focusId) watch.add(focusId);
+  const could = mode() === 'queue' ? Object.entries(g.maybe || {}).filter(([id]) => watch.has(id))
+    .sort((a, b) => (a[1] || 9) - (b[1] || 9))
+    .map(([id, k]) => `<span class="could" title="${shortName(id)} is below the bank's target for this episode">could be ${shortName(id)} (${k ? 'audio #' + k : 'captions'})</span>`).join('') : '';
   const ctx = rows => rows.map(r => `<div class="ctx">${r.mmss} <b>${r.speaker || '?'}</b> ${r.text}</div>`).join('');
   box.innerHTML = `
-    <div class="meta"><span>${g.mmss}</span><span>${g.dur}s</span><span>${g.domain}</span><span>${g.segment}</span>${reasons}<span>${i+1}/${groups.length}</span></div>
+    <div class="meta"><span>${g.mmss}</span><span>${g.dur}s</span><span title="the clip the player requests, in audio seconds">clip ${(+g.start_s).toFixed(1)}–${(+g.end_s).toFixed(1)}</span><span>${g.domain}</span><span>${g.segment}</span>${reasons}${could}<span>${i+1}/${groups.length}</span></div>
+    ${g.pred ? `<div class="autolab">assign said <b>${(g.audio_top[0] || [])[2] || g.pred}</b>${g.pred_score != null ? ` at ${(+g.pred_score).toFixed(2)}` : ''} — <kbd>y</kbd> if that is the voice, otherwise pick who it is</div>` : ''}
     ${ctx(g.before)}
-    <audio id="player" controls autoplay src="${clipUrl(g)}"></audio>
-    <div class="passage">${g.utts.map(u => `<div class="utt" data-id="${u.utt_id}"><span class="mark"></span><span class="t">${mmss(u.start_s)}</span><span class="play" title="play just this line">▶</span><span class="txt">${u.text || '<i>(no text)</i>'}</span><span class="lab">${u.label ? u.label + ' · ' + u.label_source : ''}</span><span class="cut" title="two speakers in this line? split it at a word">✂ split</span></div>`).join('')}</div>
+    <audio id="player" controls ${$('#autoplay').checked ? 'autoplay' : ''} src="${clipUrl(g)}"></audio>
+    <div class="frames" id="frames"></div>
+    <div class="passage">${g.utts.map(u => `<div class="utt" data-id="${u.utt_id}"><span class="mark"></span><span class="t">${mmss(u.start_s)}</span><span class="play" title="play just this line">▶</span><span class="txt">${u.text || '<i>(no text)</i>'}</span><span class="lab">${u.label ? u.label + ' · ' + u.label_source : ''}${u.split_auto ? ` <span class="autosplit" data-base="${u.split_auto}" title="split automatically (two voices); click to undo the split">auto-split ↩</span>` : ''}</span><span class="cut" title="two speakers in this line? split it at a word">✂ split</span></div>${u.two_voices ? `<div class="tvhint" data-id="${u.utt_id}">✂ sounds like two voices: <b>${u.two_voices.left}</b>, then <b>${u.two_voices.right}</b> from “${u.two_voices.word}” (${mmss(u.two_voices.t_cut)})<span class="tvok" title="split before “${u.two_voices.word}”">split there</span><span class="tvno" title="it is one voice: drop the suggestion">one voice</span></div>` : ''}`).join('')}</div>
     ${ctx(g.after)}`;
   box.querySelectorAll('.utt').forEach(el => el.onclick = ev => {
     if (splitting || ['cut', 'w', 'play'].some(c => ev.target.classList.contains(c))) return;
@@ -241,10 +483,26 @@ function show() {
   });
   box.querySelectorAll('.play').forEach(el => el.onclick = ev => { ev.stopPropagation(); const u = g.utts.find(x => x.utt_id === el.parentElement.dataset.id); playRange(u.start_s, u.end_s); });
   box.querySelectorAll('.cut').forEach(el => el.onclick = async ev => { ev.stopPropagation(); await startSplit(el.parentElement); });
+  box.querySelectorAll('.autosplit').forEach(el => el.onclick = async ev => {
+    ev.stopPropagation();
+    await api('/api/unsplit', {base_utt_id: el.dataset.base});
+    await loadEpisodes(); focusOn(el.dataset.base); toast('split undone: back to one line (it will not be split again)', 3000);
+  });
+  box.querySelectorAll('.tvhint').forEach(el => {
+    const u = g.utts.find(x => x.utt_id === el.dataset.id);
+    el.querySelector('.tvok').onclick = async ev => { ev.stopPropagation(); await splitAt(u.utt_id, u.two_voices.before_word); };
+    el.querySelector('.tvno').onclick = async ev => {
+      ev.stopPropagation();
+      await api('/api/two_voices/dismiss', {utt_id: u.utt_id});
+      u.two_voices = null; show(); toast('kept as one voice');
+    };
+  });
   paintSel();
   if (sel.size < g.utt_ids.length) $('#player').src = clipUrl(g, ...selRange());   // a pre-selected part plays alone
   renderCands(g);
   warm(i + 1);
+  loadDiar(g);
+  paintPace();
 }
 
 function paintSel() {
@@ -256,8 +514,121 @@ function paintSel() {
   bar.innerHTML = all
     ? `<span>whole group · <b>${g.utt_ids.length}</b> line${g.utt_ids.length === 1 ? '' : 's'}</span>${g.utt_ids.length > 1 ? '<span class="h">— click a line to label just that one</span>' : ''}`
     : `<span><b>${n}</b> of ${g.utt_ids.length} lines</span><span class="chip" id="selall" title="esc">all lines</span><span class="chip" id="selplay" title="space">▶ play</span>`;
+  bar.innerHTML += `<span class="chip" id="selctx" title="p: play from the start of the line before (who asked the question?)">▶ with the line before · p</span>`;
   const a = $('#selall'); if (a) a.onclick = () => { sel = new Set(g.utt_ids); paintSel(); };
   const p = $('#selplay'); if (p) p.onclick = () => playRange(...selRange());
+  $('#selctx').onclick = () => playContext();
+  paintFrames(...selRange());
+}
+
+// ------------------------------------------------------------------ play with the line before
+function playContext() {
+  const g = groups[i]; if (!g) return;
+  const lines = [...g.before, ...g.utts];
+  const first = g.utts.findIndex(u => sel.has(u.utt_id));
+  const k = g.before.length + Math.max(0, first);
+  const prev = lines[k - 1];
+  const [a, b] = selRange();
+  if (!prev || prev.start_s == null) { toast('no line before this one'); playRange(a, b); return; }
+  playRange(Math.max(prev.start_s, a - 20), b);
+  toast(`from ${prev.mmss || mmss(prev.start_s)}${prev.speaker ? ' (' + prev.speaker.replace(/ \(.*\)$/, '') + ')' : ''}`, 1400);
+}
+
+// ------------------------------------------------------------------ stills from the video
+const frameTimes = (a, b) => { const d = b - a; return (d < 3 ? [a + d / 2] : [a + 0.2 * d, a + 0.5 * d, a + 0.8 * d]).map(t => t.toFixed(1)); };
+const frameUrl = t => `/api/line_frame/${vs}/${ep}?t=${t}`;
+function paintFrames(a, b) {
+  const box = $('#frames'); if (!box) return;
+  if (!$('#showframes').checked) { box.innerHTML = ''; return; }
+  const want = frameTimes(a, b).map(frameUrl).join('|');
+  if (box.dataset.want === want) return;
+  box.dataset.want = want;
+  box.innerHTML = frameTimes(a, b).map(t => `<img src="${frameUrl(t)}" alt="" title="${mmss(+t)}" onerror="this.classList.add('gone')">`).join('');
+}
+
+// ------------------------------------------------------------------ the diarizer's strip under each line
+let diarToken = 0;
+async function loadDiar(g) {
+  const tok = ++diarToken;
+  let d;
+  try { d = await api(`/api/diar/${vs}/${ep}?start=${g.start_s}&end=${g.end_s}`); } catch (e) { return; }
+  if (tok !== diarToken || groups[i] !== g || !d.ch.length) return;
+  let two = false;
+  document.querySelectorAll('#item .utt').forEach(el => {
+    const u = g.utts.find(x => x.utt_id === el.dataset.id); if (!u) return;
+    const j0 = Math.max(0, Math.floor((u.start_s - d.t0) / d.step)), j1 = Math.min(d.ch.length, Math.ceil((u.end_s - d.t0) / d.step));
+    const ch = d.ch.slice(j0, j1); if (!ch.length) return;
+    const runs = []; ch.forEach(c => { const r = runs[runs.length - 1]; if (r && r[0] === c) r[1]++; else runs.push([c, 1]); });
+    if (ch.some(c => c > 0)) two = true;
+    const strip = document.createElement('div'); strip.className = 'dz';
+    strip.title = 'who the diarizer hears; click to split the line here';
+    strip.innerHTML = runs.map(([c, n]) => `<i class="${c < 0 ? 'cn' : 'c' + c}" style="flex:${n}"></i>`).join('') + '<b class="mk"></b>';
+    const at = ev => { const r = strip.getBoundingClientRect(); return u.start_s + (u.end_s - u.start_s) * Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)); };
+    strip.onmousemove = ev => { const r = strip.getBoundingClientRect(); strip.querySelector('.mk').style.left = (ev.clientX - r.left) + 'px'; strip.title = `split at ${at(ev).toFixed(1)} s`; };
+    strip.onclick = async ev => { ev.stopPropagation(); await splitAtTime(u.utt_id, at(ev)); };
+    const after = el.nextElementSibling && el.nextElementSibling.classList.contains('tvhint') ? el.nextElementSibling : el;
+    after.after(strip);
+  });
+  if (two && !document.querySelector('#item .dzkey')) {
+    const k = document.createElement('div'); k.className = 'dzkey';
+    k.innerHTML = 'diarizer:<i style="background:#5b9bd5"></i>main voice<i style="background:var(--accent)"></i>second voice<i style="background:#b07cd8"></i>other';
+    const ps = document.querySelector('#item .passage'); if (ps) ps.before(k);
+  }
+}
+async function splitAtTime(id, t) {
+  if (splitting) return;
+  const words = await api(`/api/words/${id}`);
+  if (words.length < 2) { toast('nothing to split: one word'); return; }
+  let k = 1, best = 1e9;
+  for (let j = 1; j < words.length; j++) { const b = 0.5 * (words[j - 1].end_s + words[j].start_s), dd = Math.abs(b - t); if (dd < best) { best = dd; k = j; } }
+  await splitAt(id, k);
+}
+
+// ------------------------------------------------------------------ what a castaway sounds like
+const voiceCache = {};
+let voiceAudio = null;
+function stopVoice() { if (voiceAudio) { voiceAudio.onended = null; voiceAudio.pause(); voiceAudio = null; } document.querySelectorAll('.voice.on').forEach(x => x.classList.remove('on')); }
+async function playVoice(id, el) {
+  if (!id || ['OTHER', 'UNKNOWN', 'NOSPEECH'].includes(id)) return;
+  stopVoice();
+  let d = voiceCache[id];
+  if (!d) { try { d = voiceCache[id] = await api(`/api/voice/${vs}/${ep}/${encodeURIComponent(id)}?n=3`); } catch (e) { toast('could not load their lines'); return; } }
+  if (!d.samples.length) { toast(`no clean lines of ${shortName(id)} yet: label a few, or check their name cards`, 2600); return; }
+  const p = $('#player'); if (p) p.pause();
+  if (el) el.classList.add('on');
+  let k = 0; const a = new Audio(); voiceAudio = a;
+  const next = () => {
+    if (voiceAudio !== a) return;
+    if (k >= d.samples.length) { stopVoice(); return; }
+    const x = d.samples[k++]; a.src = `/api/clip/${x.vs}/${x.ep}?start=${x.start_s}&end=${x.end_s}&variant=${variant()}&pad=0.1`; a.play();
+  };
+  a.onended = () => setTimeout(next, 400);
+  toast(`${shortName(id)}: ${d.samples.map(x => 'E' + String(x.ep).padStart(2, '0') + ' ' + x.source).join(' · ')}`, 2600);
+  next();
+}
+function wireVoices(root) {
+  root.querySelectorAll('.voice').forEach(el => el.onclick = ev => { ev.stopPropagation(); if (el.classList.contains('on')) stopVoice(); else playVoice(el.dataset.v, el); });
+}
+
+// ------------------------------------------------------------------ pace: lines per active minute this session
+const paceKey = () => `survspk.pace.${vs}.${ep}.${mode()}`;
+function notePace(n) {
+  let ev = []; try { ev = JSON.parse(sessionStorage.getItem(paceKey()) || '[]'); } catch (e) {}
+  ev.push([Date.now(), n]); try { sessionStorage.setItem(paceKey(), JSON.stringify(ev.slice(-2000))); } catch (e) {}
+  paintPace();
+}
+function paintPace() {
+  let ev = []; try { ev = JSON.parse(sessionStorage.getItem(paceKey()) || '[]'); } catch (e) {}
+  const el = $('#pace');
+  if (ev.length < 3) { el.textContent = ev.length ? `${ev.reduce((a, x) => a + x[1], 0)} done this session` : ''; return; }
+  let active = 0; for (let k = 1; k < ev.length; k++) active += Math.min(120000, ev[k][0] - ev[k - 1][0]);
+  const n = ev.slice(1).reduce((a, x) => a + x[1], 0), perMin = n / Math.max(active / 60000, 0.25);
+  const unit = mode() === 'cards' ? 'cards' : 'lines';
+  let left = 0;
+  if (mode() === 'cards') left = (cards || []).filter(c => !c.checked).length;
+  else left = groups.slice(i).reduce((a, g) => a + g.utt_ids.length, 0);
+  const eta = left ? ` · ${left} left ≈ ${Math.max(1, Math.round(left / perMin))} min` : '';
+  el.textContent = `${ev.reduce((a, x) => a + x[1], 0)} ${unit} this session · ${perMin.toFixed(1)}/min${eta}`;
 }
 
 function renderCands(g) {
@@ -265,17 +636,19 @@ function renderCands(g) {
   const seen = new Set();
   const add = (id, name, src, conf, key) => { if (!id || seen.has(id)) return; seen.add(id); list.push({id, name, src, conf, key}); };
   if (g.text_prior && g.text_prior.speaker_id) add(g.text_prior.speaker_id, g.text_prior.name, 'text prior', g.text_prior.confidence, 't');
+  if (g.chyron) add(g.chyron.speaker_id, g.chyron.name, `chyron${g.chyron.ocr ? ' “' + g.chyron.ocr.slice(0, 24) + '”' : ''}`, null, 'c');
   if (g.sdh) add(g.sdh.speaker_id, g.sdh.name, g.sdh.explicit ? 'SDH name (explicit)' : 'SDH name (inherited)', null, 's');
-  g.audio_top.forEach(([id, sc, name], k) => add(id, name, `audio #${k+1}`, sc, k === 0 ? 'a' : null));
+  g.audio_top.forEach(([id, sc, name], k) => add(id, name, g.pred && k === 0 ? 'auto label' : `audio #${k+1}`, sc, k === 0 ? 'a' : null));
   const spk = new Set([...g.before, ...g.after].map(r => r.speaker).filter(Boolean));
   const byName = Object.fromEntries(data.candidates.map(c => [c.name, c.id]));
   spk.forEach(nm => add(byName[nm], nm, 'neighbour', null, null));
   list.forEach((c, k) => c.num = k + 1);
   $('#cands').innerHTML = list.map(c => `
-    <div class="cand" data-id="${c.id}"><span class="key">${c.num}</span><span>${c.name}</span>
+    <div class="cand" data-id="${c.id}"><span class="key">${c.num}</span><span>${c.name}</span><span class="voice" data-v="${c.id}" title="hear ${c.name.replace(/"/g, '')} (⇧${c.num})">♪</span>
       ${c.conf != null ? `<span class="conf">${(+c.conf).toFixed(2)}</span>` : ''}<span class="src">${c.src}${c.key ? ' · ' + c.key : ''}</span></div>
     ${c.src === 'text prior' && g.text_prior.reason ? `<div class="tp-reason">${g.text_prior.reason}</div>` : ''}`).join('');
   $('#cands').querySelectorAll('.cand').forEach(el => el.onclick = () => label(el.dataset.id));
+  wireVoices($('#cands'));
   window._cands = list;
 }
 
@@ -291,20 +664,24 @@ function renderCoverage() {
   $('#cov').innerHTML = cov.map(c => {
     const cls = c.status === 'banked' ? 'ok' : c.status;
     const pct = Math.min(100, 100 * Math.min(c.secs / minS, c.n / minU));
-    const more = c.status === 'thin' ? `~${Math.round(c.open_secs)} s in the queue could be theirs` : c.status === 'quiet' ? 'quiet this episode — nothing plausible left in the queue' : '';
-    return `<div class="row ${cls}"><span class="nm" data-id="${c.id}" title="label the selected lines as ${c.name}">${c.name}</span>` +
+    const more = c.status === 'thin' ? `~${Math.round(c.open_secs)} s in the queue could be theirs <span class="show" data-focus="${c.id}" title="show only the clips that could be ${c.name}">show these</span>` : c.status === 'quiet' ? 'quiet this episode — nothing plausible left in the queue' : '';
+    return `<div class="row ${cls}"><span><span class="nm" data-id="${c.id}" title="label the selected lines as ${c.name}">${c.name}</span><span class="voice" data-v="${c.id}" title="hear them">♪</span></span>` +
       `<span class="h">${c.n}/${minU} lines${c.n_human ? ' · ' + c.n_human + ' yours' : ''}</span><span class="h">${Math.round(c.secs)}/${minS} s</span>` +
       `<span class="bar"><i style="width:${pct}%"></i></span>${more ? `<span class="more">${more}</span>` : ''}</div>`;
   }).join('');
   $('#cov').querySelectorAll('.nm').forEach(el => el.onclick = () => label(el.dataset.id));
+  $('#cov').querySelectorAll('.show').forEach(el => el.onclick = () => setFocus(el.dataset.focus));
+  wireVoices($('#cov'));
 }
 
 function renderGrid() {
   const all = [...data.candidates, ...data.pseudo];
   const q = $('#search').value.trim().toLowerCase();
   const rows = all.filter(c => !q || c.name.toLowerCase().includes(q));
-  $('#grid').innerHTML = rows.map((c, k) => `<div data-id="${c.id}" class="${k === 0 && q ? 'hl' : ''}">${c.name}</div>`).join('');
+  const pseudo = new Set(data.pseudo.map(x => x.id));
+  $('#grid').innerHTML = rows.map((c, k) => `<div data-id="${c.id}" class="${k === 0 && q ? 'hl' : ''}">${c.name}${pseudo.has(c.id) ? '' : `<span class="voice" data-v="${c.id}" title="hear them">♪</span>`}</div>`).join('');
   $('#grid').querySelectorAll('div').forEach(el => el.onclick = () => label(el.dataset.id));
+  wireVoices($('#grid'));
   window._grid = rows;
 }
 
@@ -312,7 +689,11 @@ async function label(speaker_id) {
   if (i >= groups.length || splitting) return;
   const g = groups[i];
   const ids = g.utt_ids.filter(u => sel.has(u));
-  await api('/api/label', {utt_ids: ids, speaker_id});
+  if (g.pred) {
+    const r = await api('/api/audit_verdict', {utt_ids: ids, speaker_id, pred_speaker: g.pred, pred_score: g.pred_score});
+    paintAudit(r.stats);
+  } else await api('/api/label', {utt_ids: ids, speaker_id});
+  stopVoice(); notePace(ids.length);
   const nm = (data.candidates.find(c => c.id === speaker_id) || data.pseudo.find(c => c.id === speaker_id) || {name: speaker_id}).name;
   pushHistory({ids, what: `${ids.length === 1 ? 'line' : ids.length + ' lines'} at ${g.mmss} → ${nm}`});
   const rest = g.utt_ids.filter(u => !sel.has(u));
@@ -324,6 +705,11 @@ async function label(speaker_id) {
     toast(`${ids.length} → ${nm} · ${rest.length} line${rest.length === 1 ? '' : 's'} left in this group`);
   }
   show();
+}
+function paintAudit(st) {
+  const el = $('#auditstat');
+  if (mode() !== 'audit' || !st) { el.textContent = ''; return; }
+  el.textContent = st.n ? `audit: ${st.n_confirmed}/${st.n} confirmed · precision ${Math.round(100 * st.precision)}% (≥ ${Math.round(100 * st.wilson_low)}% at 95%)` : 'audit: no verdicts yet';
 }
 function focusOn(uttId) { const k = groups.findIndex(g => g.utt_ids.includes(uttId)); if (k >= 0 && k !== i) { i = k; show(); } }
 
@@ -344,14 +730,157 @@ async function startSplit(lineEl) {
     w.onclick = async ev => {
       ev.stopPropagation();
       const k = +w.dataset.k; if (!k) { toast('that is the first word — click the first word of the SECOND speaker'); return; }
-      const r = await api('/api/split', {utt_id: id, before_word: k});
-      pushHistory({split: id, what: `split at ${r.t_cut.toFixed(1)}s`});
-      nextSel = new Set([r.parts[0]]); pendingB = r.parts[1];
-      await loadEpisodes();
-      focusOn(r.parts[0]);
-      toast(`split at ${r.t_cut.toFixed(1)}s — part 1 is selected: pick its speaker, then part 2`, 3000);
+      await splitAt(id, k);
     };
   });
+}
+
+async function splitAt(id, k) {
+  const r = await api('/api/split', {utt_id: id, before_word: k});
+  pushHistory({split: id, what: `split at ${r.t_cut.toFixed(1)}s`});
+  nextSel = new Set([r.parts[0]]); pendingB = r.parts[1];
+  await loadEpisodes();
+  focusOn(r.parts[0]);
+  toast(`split at ${r.t_cut.toFixed(1)}s — part 1 is selected: pick its speaker, then part 2`, 3000);
+}
+
+// ------------------------------------------------------------------ card check
+// Each name card says who is on screen; the person picks which nearby line that castaway speaks (or none).
+let cards = [], ci = 0, picked = new Set(), pickedFor = null, lastPick = null;
+async function loadCards(token) {
+  const d = await api(`/api/cards/${vs}/${ep}`);
+  window._cov = await api(`/api/coverage/${vs}/${ep}`);
+  if (token !== loadToken) return;
+  data = {candidates: [], pseudo: []};
+  cards = d.cards; window._cardper = d.per_castaway;
+  paintChanges(); $('#bulkcard').hidden = true;
+  groups = []; i = 0;
+  renderCoverage();
+  stale = (window._eps || []).some(x => x.vs === vs && x.ep <= ep && x.stale_embeddings);
+  paintRefit();
+  const first = cards.findIndex(c => !c.checked);
+  ci = first >= 0 ? first : 0;
+  showCard();
+  paintBanner(token);
+}
+function focusCard(k) { const j = cards.findIndex(c => c.castaway_id === k.castaway_id && Math.abs(c.t_s - k.t_s) < 0.01); if (j >= 0) { ci = j; showCard(); } }
+function cardClip(a, b) { return `/api/clip/${vs}/${ep}?start=${a}&end=${b}&variant=${variant()}&pad=0.2`; }
+function cardSpan(c) {
+  const a = c.lines.length ? Math.min(c.lines[0].start_s, c.t_s - 1) : c.t_s - 6;
+  const b = c.lines.length ? Math.max(...c.lines.map(l => l.end_s)) : c.t_s + 4;
+  return [a, Math.min(b, c.t_s + 12)];
+}
+function playCard(a, b) { const p = $('#player'); if (!p) return; const u = cardClip(a, b); if (p.getAttribute('src') !== u) p.src = u; p.currentTime = 0; p.play(); }
+function showCard() {
+  const left = cards.filter(c => !c.checked).length;
+  $('#count').textContent = `${left} of ${cards.length} cards left`;
+  paintPace();
+  $('#paneltitle').textContent = 'castaways on cards';
+  paintCardPanel();
+  const box = $('#item');
+  if (!cards.length) { box.innerHTML = '<div class="done">no name cards in this episode</div>'; return; }
+  const c = cards[ci];
+  if (pickedFor !== c) { picked = new Set(); pickedFor = c; lastPick = null; }
+  const nm = c.name.replace(/ \(.*\)$/, '');
+  const [a, b] = cardSpan(c);
+  let marked = false;
+  const rows = [];
+  c.lines.forEach((l, k) => {
+    if (!marked && l.start_s > c.t_s) { rows.push(`<div class="cardline">card appears ${mmss(c.t_s)}</div>`); marked = true; }
+    const ans = c.checked && (c.answers || [c.answer]).includes(l.utt_id);
+    const dt = l.dt === 0 ? 'at the card' : `${Math.abs(l.dt).toFixed(1)} s ${l.dt < 0 ? 'before' : 'after'}`;
+    rows.push(`<div class="cline${ans ? ' ans' : ''}${picked.has(l.utt_id) ? ' pick' : ''}" data-id="${l.utt_id}"><span class="key">${k + 1}</span><span class="t">${dt}</span>` +
+      `<span class="play" title="play just this line">▶</span><span class="txt">${l.text || '<i>(no text)</i>'}</span>` +
+      (c.suggested === l.utt_id ? '<span class="sug" title="the automatic rule would pick this line">auto pick</span>' : '') +
+      (l.label ? `<span class="lab">${l.label.replace(/ \(.*\)$/, '')} · ${l.label_source}</span>` : '') + `</div>`);
+  });
+  if (!marked) rows.push(`<div class="cardline">card appears ${mmss(c.t_s)}</div>`);
+  if (!c.lines.length) rows.push(`<div class="ask">The subtitles have no lines near this card (music or silence). Press <kbd>0</kbd>.</div>`);
+  const nAns = c.checked ? (c.answers || (c.answer ? [c.answer] : [])).length : 0;
+  const status = c.checked ? (nAns ? `<b>checked</b>: ${nm} speaks the green line${nAns > 1 ? 's' : ''}` : `<b>checked</b>: ${nm} speaks none of these lines`) : 'not checked yet';
+  box.innerHTML = `
+    <div class="meta"><span>${c.mmss}</span><span>card ${ci + 1}/${cards.length}</span><span class="reason audit">${c.checked ? 'checked' : ''}</span></div>
+    <div class="cardhead">
+      <img class="frame" alt="the frame just after the card appears" src="/api/card_frame/${vs}/${ep}?t=${c.t_s.toFixed(1)}" onerror="this.style.visibility='hidden'">
+      <div><div class="ocr">${c.ocr || ''}</div><div class="who">Card: <b>${nm}</b></div>
+        <div class="ask">Which line does ${nm} speak? Click it or press its number. Press <kbd>0</kbd> if ${nm} speaks none of them.</div>
+        <div class="cstat">${status}</div></div>
+    </div>
+    <audio id="player" controls ${$('#autoplay').checked ? 'autoplay' : ''} src="${cardClip(a, b)}"></audio>
+    <div>${rows.join('')}</div>
+    ${picked.size ? `<div class="picksave" id="picksave">save these ${picked.size} line${picked.size === 1 ? '' : 's'} as ${nm} (↩)</div>` : ''}
+    <div class="cnone${c.checked && !nAns ? ' ans' : ''}" id="cnone"><kbd>0</kbd> ${nm} speaks none of these lines</div>`;
+  box.querySelectorAll('.cline').forEach(el => el.onclick = ev => {
+    if (ev.target.classList.contains('play')) { const l = c.lines.find(x => x.utt_id === el.dataset.id); playCard(l.start_s, l.end_s); return; }
+    const id = el.dataset.id;
+    if (ev.shiftKey && lastPick) {                       // a range from the last picked line
+      const ids = c.lines.map(x => x.utt_id), [i0, i1] = [ids.indexOf(lastPick), ids.indexOf(id)].sort((x, y) => x - y);
+      ids.slice(i0, i1 + 1).forEach(x => picked.add(x)); lastPick = id; showCard(); return;
+    }
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey) { togglePick(id); return; }
+    answerCard([...picked, id]);                        // a plain click saves it with anything already picked
+  });
+  $('#cnone').onclick = () => answerCard(null);
+  const ps = $('#picksave'); if (ps) ps.onclick = () => answerCard([...picked]);
+  const nx = cards[ci + 1]; if (nx) { const im = new Image(); im.src = `/api/card_frame/${vs}/${ep}?t=${nx.t_s.toFixed(1)}`; }
+}
+function paintCardPanel() {
+  const per = window._cardper || [];
+  $('#selbar').innerHTML = '';
+  $('#cands').innerHTML = `<div class="cprog">` + per.map(p =>
+    `<span class="nm ${p.confirmed ? 'ok' : (p.n ? '' : 'none')}" data-id="${p.id}" title="${p.unchecked ? 'go to their next unchecked card' : ''}">${p.name.replace(/ \(.*\)$/, '')}</span>` +
+    `<span class="h">${p.n ? `${p.n} card${p.n === 1 ? '' : 's'}${p.confirmed ? ` · ${p.confirmed} confirmed` : ''}${p.unchecked ? ` · ${p.unchecked} to check` : ''}` : 'no card this episode'}</span>`).join('') + `</div>`;
+  $('#cands').querySelectorAll('.nm').forEach(el => el.onclick = () => {
+    const j = cards.findIndex((c, k) => c.castaway_id === el.dataset.id && !c.checked);
+    const k2 = j >= 0 ? j : cards.findIndex(c => c.castaway_id === el.dataset.id);
+    if (k2 >= 0) { ci = k2; showCard(); }
+  });
+}
+function togglePick(id) { if (picked.has(id)) picked.delete(id); else picked.add(id); lastPick = id; showCard(); }
+async function answerCard(ids) {                           // ids: a list of lines, or null = none of them
+  const c = cards[ci]; if (!c) return;
+  const nm = c.name.replace(/ \(.*\)$/, '');
+  const order = c.lines.map(l => l.utt_id);
+  ids = ids ? [...new Set(ids)].sort((x, y) => order.indexOf(x) - order.indexOf(y)) : [];
+  await api('/api/card_check', {vs, ep, t_s: c.t_s, castaway_id: c.castaway_id, utt_ids: ids});
+  notePace(1);
+  pushHistory({card: {vs, ep, t_s: c.t_s, castaway_id: c.castaway_id}, what: `card ${c.mmss} ${nm}`});
+  c.checked = true; c.answers = ids; c.answer = ids[0] || null;
+  picked = new Set(); lastPick = null;
+  c.lines.forEach(l => {                                   // what the labels on these lines are now
+    if (l.label_source === 'chyron' && l.label === c.name) { l.label = null; l.label_source = null; }
+    if (ids.includes(l.utt_id) && l.label_source !== 'human') { l.label = c.name; l.label_source = 'card ✓'; }
+  });
+  const e0 = (window._eps || []).find(x => x.vs === vs && x.ep === ep);
+  if (e0) {
+    e0.n_checked = cards.filter(x => x.checked).length;
+    const o = [...$('#episode').options].find(o => o.value === `${vs}|${ep}`);
+    if (o) o.textContent = `${vs} E${String(ep).padStart(2, '0')} · ${e0.n_checked}/${e0.n_cards} cards checked`;
+  }
+  const p = (window._cardper || []).find(x => x.id === c.castaway_id);
+  if (p) { const cc = cards.filter(x => x.castaway_id === c.castaway_id); p.confirmed = cc.filter(x => x.checked && (x.answers || []).length).length; p.unchecked = cc.filter(x => !x.checked).length; }
+  toast(ids.length ? `${nm}: ${ids.length === 1 ? 'line' : ids.length + ' lines'} saved` : `${nm}: none of these lines`);
+  const nxt = cards.findIndex((x, k) => k > ci && !x.checked);
+  const any = cards.findIndex(x => !x.checked);
+  ci = nxt >= 0 ? nxt : (any >= 0 ? any : ci);
+  showCard();
+  paintBanner(loadToken);
+}
+function cardKey(e) {
+  const c = cards[ci];
+  if (e.key === ' ') { e.preventDefault(); if (c) playCard(...cardSpan(c)); return; }
+  if (e.key === ',') { const p = $('#player'); if (p) p.playbackRate = p.playbackRate > 0.8 ? 0.75 : 1.0; return; }
+  if (e.key === 'ArrowRight' || e.key === 'n') { if (ci < cards.length - 1) { ci++; showCard(); } return; }
+  if (e.key === 'ArrowLeft') { if (ci > 0) { ci--; showCard(); } return; }
+  if (e.key === 'z') { undo(); return; }
+  if (e.key === '0' || e.key === 'x') { answerCard(null); return; }
+  if (e.key === 'Enter') { if (picked.size) answerCard([...picked]); return; }
+  if (e.key === 'Escape') { picked = new Set(); lastPick = null; showCard(); return; }
+  const digit = /^Digit([1-9])$/.exec(e.code || '');       // e.code, since shift turns "1" into "!"
+  if (digit && c) {
+    const l = c.lines[+digit[1] - 1]; if (!l) return;
+    if (e.shiftKey) togglePick(l.utt_id); else answerCard([...picked, l.utt_id]);
+  }
 }
 
 // undo history: per episode, kept in localStorage so a reload does not lose it
@@ -360,22 +889,27 @@ function loadHistory() { try { history = JSON.parse(localStorage.getItem(histKey
 function pushHistory(h) { history.push(h); if (history.length > 200) history.shift(); try { localStorage.setItem(histKey(), JSON.stringify(history)); } catch (e) {} paintUndo(); }
 function paintUndo() {
   const b = $('#undo'), h = history[history.length - 1];
-  b.disabled = !h; b.textContent = h ? `↩ undo: ${h.what}` : '↩ undo';
+  b.disabled = !h; b.textContent = h ? `↩ undo: ${h.what}` : '↩ undo'; b.title = h ? `undo (z): ${h.what}` : 'undo the last label or split (z)';
 }
 async function undo() {
   const h = history[history.length - 1]; if (!h) return;
   try {
-    if (h.split) { await api('/api/unsplit', {base_utt_id: h.split}); }
+    if (h.card) { await api('/api/card_uncheck', h.card); }
+    else if (h.bulk) { await api('/api/bulk_unconfirm', {utt_ids: h.bulk}); }
+    else if (h.split) { await api('/api/unsplit', {base_utt_id: h.split}); }
     else { await api('/api/unlabel', {utt_ids: h.ids}); }
   } catch (e) { toast('could not undo: ' + String(e.message || e).slice(0, 120), 4000); history.pop(); paintUndo(); return; }
   history.pop(); try { localStorage.setItem(histKey(), JSON.stringify(history)); } catch (e) {}
   toast(`undone: ${h.what}`);
-  if (h.split) { await loadEpisodes(); focusOn(h.split); } else { await loadQueue(); focusOn(h.ids[0]); }
+  if (h.card) { await loadEpisodes(); focusCard(h.card); }
+  else if (h.bulk) { await loadQueue(); }
+  else if (h.split) { await loadEpisodes(); focusOn(h.split); } else { await loadQueue(); focusOn(h.ids[0]); }
   paintUndo();
 }
 $('#undo').onclick = () => undo();
 
 document.addEventListener('keydown', async e => {
+  if (mode() === 'cards') { if (!e.metaKey && !e.ctrlKey && !e.altKey) cardKey(e); return; }
   const inSearch = document.activeElement === $('#search');
   if (inSearch) {
     if (e.key === 'Enter') { const r = window._grid && window._grid[0]; if (r) { $('#search').value = ''; renderGrid(); label(r.id); $('#search').blur(); } }
@@ -383,32 +917,115 @@ document.addEventListener('keydown', async e => {
     return;
   }
   const p = $('#player');
-  if (e.key === 'Escape') { if (splitting) show(); else if (groups[i]) { sel = new Set(groups[i].utt_ids); paintSel(); } return; }
+  if (e.key === 'Escape') { stopVoice(); if (splitting) show(); else if (groups[i]) { sel = new Set(groups[i].utt_ids); paintSel(); } return; }
+  const dg = /^Digit([1-9])$/.exec(e.code || '');
+  if (dg && e.shiftKey) { const c = (window._cands || [])[+dg[1] - 1]; if (c) playVoice(c.id, document.querySelector(`#cands .voice[data-v="${c.id}"]`)); return; }
+  if (e.key === 'p') { playContext(); return; }
   if (e.key === ' ') { e.preventDefault(); playRange(...selRange()); return; }
   if (e.key === ',') { if (p) p.playbackRate = p.playbackRate > 0.8 ? 0.75 : 1.0; return; }
   if (e.key === '/') { e.preventDefault(); $('#search').focus(); return; }
   if (e.key === 'ArrowRight' || e.key === 'n') { if (i < groups.length - 1) { i++; show(); } return; }
   if (e.key === 'ArrowLeft') { if (i > 0) { i--; show(); } return; }
   if (e.key === 'z') { undo(); return; }
+  if (e.key === 'y') { const g = groups[i]; if (g && g.pred) label(g.pred); else toast('y confirms an auto label (audit mode)'); return; }
   if (e.key === 'o') return label('OTHER');
   if (e.key === 'u') return label('UNKNOWN');
   if (e.key === 'x') return label('NOSPEECH');
   if (/^[1-9]$/.test(e.key)) { const c = window._cands[+e.key - 1]; if (c) label(c.id); return; }
-  if (e.key === 's' || e.key === 't' || e.key === 'a') { const c = (window._cands || []).find(c => c.key === e.key); if (c) label(c.id); else toast(`no ${e.key} candidate`); }
+  if (e.key === 's' || e.key === 't' || e.key === 'a' || e.key === 'c') { const c = (window._cands || []).find(c => c.key === e.key); if (c) label(c.id); else toast(`no ${e.key} candidate`); }
 });
 $('#search').addEventListener('input', renderGrid);
-$('#vocals').addEventListener('change', () => { preload = {}; show(); });
-$('#sort').addEventListener('change', () => loadQueue());
+$('#vocals').addEventListener('change', () => { preload = {}; if (mode() === 'cards') showCard(); else show(); });
+$('#sort').addEventListener('change', () => { focusId = null; loadQueue(); });
+$('#mode').addEventListener('change', () => { localStorage.setItem('survspk.mode', mode()); if (mode() !== 'queue') focusId = null; loadEpisodes(); });
+$('#autoplay').checked = store.get('survspk.autoplay', true);
+$('#showframes').checked = store.get('survspk.frames', true);
+$('#showframes').addEventListener('change', () => { store.set('survspk.frames', $('#showframes').checked); const b = $('#frames'); if (b) b.dataset.want = ''; if (groups[i]) paintFrames(...selRange()); });
+$('#autoplay').addEventListener('change', () => { store.set('survspk.autoplay', $('#autoplay').checked); if (!$('#autoplay').checked && $('#player')) $('#player').pause(); });
+try { const m = localStorage.getItem('survspk.mode'); if (m) $('#mode').value = m; } catch (e) {}
 document.querySelectorAll('.pseudo div').forEach(el => el.onclick = () => label(el.dataset.id));
-$('#refit').onclick = async () => {
-  const btn = $('#refit'); btn.disabled = true; btn.textContent = $('#stale').textContent ? 're-embedding + refitting… (minutes)' : 'refitting…';
+// ------------------------------------------------------------------ what the last refit changed
+let lastChanges = null;
+function paintChanges() {
+  const box = $('#changes'), ch = lastChanges;
+  if (!ch || ch.vs !== vs || ch.ep !== ep || mode() === 'cards' || (!ch.flips.length && !ch.n_new && !ch.n_dropped)) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  const nm = x => String(x || '?').replace(/ \(.*\)$/, '');
+  box.innerHTML = `<div class="hd"><span class="msg"><b>The refit changed ${ch.n_flipped} label${ch.n_flipped === 1 ? '' : 's'} from one person to another</b>` +
+    ` · labelled ${ch.n_new} new line${ch.n_new === 1 ? '' : 's'} · sent ${ch.n_dropped} back to the queue.` +
+    `<small style="display:block;color:var(--dim)">Spot-check a few flips: ▶ to listen, then say which is right. Longest first${ch.n_flipped > ch.flips.length ? `, first ${ch.flips.length} shown` : ''}.</small></span>` +
+    `<span class="btn" id="chg-hide">hide</span></div>` +
+    `<div class="chglist">` + ch.flips.map(f => `<div class="chg" data-id="${f.utt_id}"><span class="t">${f.mmss}</span><span class="play" title="play">▶</span>` +
+      `<span class="txt">${f.text || '<i>(no text)</i>'}</span><span class="who"><s>${nm(f.old_name)}</s> → <b>${nm(f.new_name)}</b>${f.new_conf != null ? ` ${(+f.new_conf).toFixed(2)}` : ''}</span>` +
+      `<span class="b" data-a="new" title="the new label is right: make it a human label">${nm(f.new_name)} ✓</span>` +
+      `<span class="b" data-a="old" title="it was right before: label it ${nm(f.old_name)}">${nm(f.old_name)}</span></div>`).join('') + `</div>`;
+  $('#chg-hide').onclick = () => { lastChanges = null; paintChanges(); };
+  box.querySelectorAll('.chg').forEach(el => {
+    const f = ch.flips.find(x => x.utt_id === el.dataset.id);
+    el.querySelector('.play').onclick = () => { const pl = $('#player'); const u = clipUrl(null, f.start_s, f.end_s); if (pl) { pl.src = u; pl.play(); } else new Audio(u).play(); };
+    el.querySelectorAll('.b').forEach(b => b.onclick = async () => {
+      const who = b.dataset.a === 'new' ? f.new : f.old;
+      await api('/api/label', {utt_ids: [f.utt_id], speaker_id: who});
+      notePace(1);
+      pushHistory({ids: [f.utt_id], what: `line at ${f.mmss} → ${nm(b.dataset.a === 'new' ? f.new_name : f.old_name)}`});
+      ch.flips = ch.flips.filter(x => x !== f); ch.n_flipped--;
+      toast(`${f.mmss} → ${nm(b.dataset.a === 'new' ? f.new_name : f.old_name)}`); paintChanges();
+    });
+  });
+}
+
+// ------------------------------------------------------------------ bulk confirm (audit mode, after the sample)
+let bulkSpk = null;
+async function paintBulk(d) {
+  const card = $('#bulkcard'), box = $('#bulk');
+  if (mode() !== 'audit') { card.hidden = true; return; }
+  card.hidden = false;
+  const st = d.stats || {n: 0, per_speaker: {}};
+  const done = st.n >= AUDIT_SAMPLE || (d.n_pool === 0);
+  if (!done) {
+    box.innerHTML = `<span class="h">Finish the audit sample first (${st.n}/${AUDIT_SAMPLE}). Lines confirmed in bulk leave the audit pool, so doing it earlier would bias the precision.</span>`;
+    return;
+  }
+  const cands = d.candidates || [];
+  if (!bulkSpk || !cands.some(c => c.id === bulkSpk)) bulkSpk = (Object.keys(st.per_speaker || {})[0]) || (cands[0] || {}).id;
+  const minc = store.get('survspk.bulkmin', 0.8);
+  box.innerHTML = `Confirm every auto label of <select id="bk-spk">${cands.map(c => `<option value="${c.id}"${c.id === bulkSpk ? ' selected' : ''}>${c.name.replace(/ \(.*\)$/, '')}</option>`).join('')}</select>` +
+    ` at confidence ≥ <input id="bk-min" type="number" min="0.5" max="1" step="0.05" value="${minc}">` +
+    `<div id="bk-info" class="h">…</div><span class="go off" id="bk-go">confirm</span>` +
+    `<div class="h" style="margin-top:6px">They become human labels without a listen, so the bank learns from them. Use it for castaways the audit got right; <kbd>z</kbd> undoes it.</div>`;
+  const refresh = async () => {
+    bulkSpk = $('#bk-spk').value; const m = +$('#bk-min').value || 0.8; store.set('survspk.bulkmin', m);
+    const pv = await api(`/api/bulk_confirm/${vs}/${ep}?speaker_id=${encodeURIComponent(bulkSpk)}&min_confidence=${m}`);
+    const a = (st.per_speaker || {})[bulkSpk];
+    $('#bk-info').innerHTML = `${pv.n} of their ${pv.n_auto} auto labels (${Math.round(pv.secs)} s)` + (a ? ` · audit: ${a.confirmed}/${a.n} right` : ' · not in the audit sample');
+    const go = $('#bk-go'); go.classList.toggle('off', !pv.n); go.textContent = pv.n ? `confirm ${pv.n} as ${shortName(bulkSpk)}` : 'nothing to confirm';
+    go.onclick = pv.n ? async () => {
+      const r = await api('/api/bulk_confirm', {vs, ep, speaker_id: bulkSpk, min_confidence: m});
+      pushHistory({bulk: r.utt_ids, what: `bulk: ${r.n} lines → ${shortName(bulkSpk)}`});
+      notePace(r.n); toast(`${r.n} lines confirmed as ${shortName(bulkSpk)}`); refresh();
+    } : null;
+  };
+  $('#bk-spk').onchange = refresh; $('#bk-min').onchange = refresh;
+  refresh();
+}
+
+async function refit() {
+  const at = {vs, ep};
+  paintRefit(true);
+  const bb = $('#bn-refit'); if (bb) { bb.disabled = true; bb.textContent = stale ? 're-embedding + refitting… (minutes)' : 'refitting…'; }
   try {
-    const r = await api('/api/refit', {vs, ep});
-    toast(`${r.re_embedded ? 're-embedded · ' : ''}bank: ${r.bank_speakers} speakers · auto now ${Math.round(100 * (r.body_auto_dur_share || 0))}% of body time · ${r.n_open} utts still open`, 5000);
+    const r = await api('/api/refit', at);
+    const re = Array.isArray(r.re_embedded) ? r.re_embedded : (r.re_embedded ? [ep] : []);
+    toast(`${re.length ? 're-embedded ' + re.map(x => 'E' + String(x).padStart(2, '0')).join(', ') + ' · ' : ''}bank: ${r.bank_speakers} speakers · auto now ${Math.round(100 * (r.body_auto_dur_share || 0))}% of body time · ${r.n_open} lines still open`, 5000);
+    markRefit = at;
+    if (r.changes) lastChanges = {vs: at.vs, ep: at.ep, ...r.changes};
+    if (mode() === 'cards') {                  // the voices are built: what is left is labelling the castaways with no card
+      $('#mode').value = 'queue'; localStorage.setItem('survspk.mode', 'queue'); $('#sort').value = 'thin';
+    }
     await loadEpisodes();
-  } catch (e) { toast(String(e.message || e).slice(0, 160), 4000); }
-  btn.disabled = false; btn.textContent = 'refit & reassign';
-};
+  } catch (e) { toast(String(e.message || e).slice(0, 160), 4000); paintRefit(); if (bb) { bb.disabled = false; bb.innerHTML = 'refit &amp; reassign'; } }
+}
+$('#refit').onclick = () => refit();
 loadEpisodes();
 </script>
 </body>

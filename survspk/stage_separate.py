@@ -105,8 +105,13 @@ def separate_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: i
     variant = "vocals" if source == "raw" else "vocals_center"
     out = settings.audio_path(variant, vs, ep)
     if out.exists() and not force:
-        log.info("%s E%02d %s exists", vs, ep, variant)
-        return out
+        from .stage_extract import ffprobe_duration
+        a, b = ffprobe_duration(out), ffprobe_duration(src)
+        if a is not None and b is not None and a < b - 5.0:          # left over from a truncated source: redo it
+            log.warning("%s E%02d %s is %.0f s but its source is %.0f s: separating again", vs, ep, variant, a, b)
+        else:
+            log.info("%s E%02d %s exists", vs, ep, variant)
+            return out
     t0 = time.time()
     with tempfile.TemporaryDirectory(prefix="survspk_demucs_") as td:
         tmp_dir = Path(td)

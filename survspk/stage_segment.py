@@ -9,6 +9,7 @@ Pure logic lives in build_utterances(); segment_episode() does the sqlite I/O.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import re
@@ -334,18 +335,136 @@ def load_words(con: sqlite3.Connection, vs: str, ep: int) -> dict[str, dict[int,
 
 
 class HumanLabelsExist(RuntimeError):
-    """Re-segmenting rebuilds every utterance and would orphan human labels and word-level splits."""
+    """Re-segmenting rebuilds every utterance; some human labels could not be re-anchored onto the new ones."""
+
+
+REANCHOR_MIN_COVER = 0.6     # a new utterance inherits a human label when this share of it lies inside the label's span
+
+
+def reanchor_labels(old: list[dict], new: list[tuple], min_cover: float = REANCHOR_MIN_COVER) -> tuple[dict[str, dict], list[dict]]:
+    """Map human/chyron labels from the old utterances of an episode onto its new ones.
+
+    old: [{utt_id, speaker_id, source, start_s, end_s, keys?, ...}]; new: [(utt_id, start_s, end_s[, keys])].
+    `keys` are the (cue_id, line indices) pieces an utterance is made of. When both sides have them, matching goes by
+    cue: a re-align moves every time (US31 E01 moved 2-4 s), so matching by time span would hand a label to the
+    neighbouring line. A new utterance inherits a label when that label's pieces make up `min_cover` of it, or when
+    every label with pieces inside it names the same speaker (cues regrouped: US31 E02 split one labelled line
+    across two new ones).
+    Without keys it falls back to time-span overlap.
+    Returns (new_utt_id -> old label row, old labels no new utterance inherited)."""
+    if not old or not new:
+        return {}, list(old)
+    out: dict[str, dict] = {}
+    used: set[str] = set()
+    by_key: dict = {}
+    for r in old:
+        for k in r.get("keys") or ():
+            by_key.setdefault(k, []).append(r)
+    spans = sorted(old, key=lambda r: r["start_s"])
+    starts = [r["start_s"] for r in spans]
+    for item in new:
+        uid, a, b = item[:3]
+        keys = set(item[3]) if len(item) > 3 and item[3] else None
+        best = None
+        if keys and by_key:
+            hits: dict[str, list] = {}
+            for k in keys:
+                for r in by_key.get(k, ()):
+                    hits.setdefault(r["utt_id"], [r, 0])[1] += 1
+            if hits:
+                speakers = {h[0]["speaker_id"] for h in hits.values()}
+                r, n = max(hits.values(), key=lambda h: h[1])
+                # the segmenter only joins cues it takes for one speaker, so a line holding pieces of labels that
+                # all agree gets that speaker; labels that disagree inside one line are left for a person
+                if n / len(keys) >= min_cover or len(speakers) == 1:
+                    best = r
+                    if len(speakers) == 1:
+                        used.update(h[0]["utt_id"] for h in hits.values())
+            if best is not None:
+                out[uid] = best
+                used.add(best["utt_id"])
+            continue
+        dur = b - a
+        if dur <= 0:
+            continue
+        best_ov = 0.0
+        j = bisect.bisect_right(starts, b)
+        for r in spans[max(0, j - 64):j]:                 # labels are short; 64 covers any plausible overlap window
+            if r.get("keys") and keys:
+                continue
+            ov = min(b, r["end_s"]) - max(a, r["start_s"])
+            if ov > best_ov:
+                best, best_ov = r, ov
+        if best is not None and best_ov / dur >= min_cover:
+            out[uid] = best
+            used.add(best["utt_id"])
+    lost = [r for r in old if r["utt_id"] not in used]
+    return out, lost
+
+
+def _utt_keys(con: sqlite3.Connection, vs: str, ep: int) -> dict[str, frozenset]:
+    """utt_id -> its (cue_id, line indices) pieces, for every current utterance of the episode."""
+    keys: dict[str, set] = {}
+    for uid, cid, li in con.execute(
+            """SELECT uc.utt_id, uc.cue_id, uc.line_indices FROM utterance_cues uc JOIN utterances u USING (utt_id)
+               WHERE u.version_season=? AND u.episode=?""", (vs, ep)):
+        keys.setdefault(uid, set()).add((cid, tuple(json.loads(li)) if li else ()))
+    return {k: frozenset(v) for k, v in keys.items()}
+
+
+def _protected_labels(con: sqlite3.Connection, vs: str, ep: int, keys: dict | None = None) -> list[dict]:
+    """Human / chyron labels of the episode with their spans (taken from the live utterance rows) and cue pieces."""
+    rows = [dict(r) for r in con.execute(
+        """SELECT l.utt_id, l.speaker_id, l.source, l.top_candidates, u.start_s, u.end_s, u.text
+           FROM labels l JOIN utterances u USING (utt_id)
+           WHERE u.version_season=? AND u.episode=? AND l.source IN ('human', 'chyron') ORDER BY u.start_s""", (vs, ep))]
+    if keys:
+        for r in rows:
+            r["keys"] = keys.get(r["utt_id"])
+    return rows
+
+
+def remap_utt_ids(old_keys: dict[str, frozenset], new_keys: dict[str, frozenset]) -> dict[str, str]:
+    """old utt_id -> the new utterance holding most of its cue pieces (for card checks that name utterances)."""
+    owner = {k: uid for uid, ks in new_keys.items() for k in ks}
+    out = {}
+    for uid, ks in old_keys.items():
+        votes: dict[str, int] = {}
+        for k in ks:
+            if k in owner:
+                votes[owner[k]] = votes.get(owner[k], 0) + 1
+        if votes:
+            out[uid] = max(votes, key=votes.get)
+    return out
+
+
+def _remap_card_checks(con: sqlite3.Connection, vs: str, ep: int, idmap: dict[str, str]) -> int:
+    try:
+        rows = con.execute("SELECT t_s, castaway_id, utt_id, utt_ids FROM card_checks WHERE version_season=? AND episode=?",
+                           (vs, ep)).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    n = 0
+    for t_s, cid, uid, uids in rows:
+        new_uid = idmap.get(uid, uid) if uid else None
+        lst = json.loads(uids) if uids else ([uid] if uid else [])
+        new_lst = list(dict.fromkeys(idmap.get(u, u) for u in lst))
+        if new_uid != uid or new_lst != lst:
+            con.execute("UPDATE card_checks SET utt_id=?, utt_ids=? WHERE version_season=? AND episode=? AND t_s=? AND castaway_id=?",
+                        (new_uid, json.dumps(new_lst) if new_lst else None, vs, ep, t_s, cid))
+            n += 1
+    return n
 
 
 def segment_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, resolver=None,
                     allow_relabel: bool = False) -> dict:
-    epi = con.execute("SELECT align_offset_s, align_drift, duration_s FROM episodes WHERE version_season=? AND episode=?",
+    epi = con.execute("SELECT align_offset_s, align_drift, align_stats, duration_s FROM episodes WHERE version_season=? AND episode=?",
                       (vs, ep)).fetchone()
     if not epi:
         raise LookupError(f"{vs} E{ep:02d} not in inventory")
-    a = 1.0 + (epi["align_drift"] or 0.0)
-    b = epi["align_offset_s"] or 0.0
-    tmap = lambda t: a * t + b  # noqa: E731
+    from .stage_align import time_map
+    knots = (json.loads(epi["align_stats"]) or {}).get("knots") if epi["align_stats"] else None
+    tmap = time_map(epi["align_offset_s"] or 0.0, epi["align_drift"] or 0.0, knots)
     cues = [dict(r) | {"lines": json.loads(r["lines"])} for r in
             con.execute("SELECT cue_id, idx, start_s, end_s, lines FROM cues WHERE version_season=? AND episode=? ORDER BY idx", (vs, ep))]
     if not cues:
@@ -355,13 +474,27 @@ def segment_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: in
         log.warning("%s E%02d has no aligned words; utterance timing falls back to proportional cue splits", vs, ep)
     utts, stats = build_utterances(cues, words, tmap, settings.segment, resolver, vs, ep, epi["duration_s"])
 
-    n_human = con.execute("""SELECT COUNT(*) FROM labels l JOIN utterances u USING (utt_id)
-                             WHERE u.version_season=? AND u.episode=? AND l.source='human'""", (vs, ep)).fetchone()[0]
-    if n_human and not allow_relabel:
-        raise HumanLabelsExist(f"{vs} E{ep:02d} has {n_human} human labels; re-segmenting would discard them (and any "
-                               f"word-level splits). Pass --force to do it anyway.")
-    con.execute("DELETE FROM utterance_cues WHERE utt_id IN (SELECT utt_id FROM utterances WHERE version_season=? AND episode=?)", (vs, ep))
+    # human / chyron labels survive a re-segment by time span; anything that cannot be re-anchored stops the
+    # re-segment unless --force (word-level splits are rebuilt from the new utterances, so they are lost too)
+    old_keys = _utt_keys(con, vs, ep)
+    protected = _protected_labels(con, vs, ep, old_keys)
+    new_keys = {ids.utt_id(vs, ep, u.idx): frozenset((t.cue_id, tuple(t.line_indices)) for t in u.turns) for u in utts}
+    new_spans = [(ids.utt_id(vs, ep, u.idx), u.start, u.end, new_keys[ids.utt_id(vs, ep, u.idx)]) for u in utts]
+    inherited, lost = reanchor_labels(protected, new_spans)
+    if lost and not allow_relabel:
+        shown = "; ".join(f"{r['utt_id']} {r['speaker_id']} {r['start_s']:.1f}-{r['end_s']:.1f}s" for r in lost[:8])
+        raise HumanLabelsExist(f"{vs} E{ep:02d}: {len(lost)} of {len(protected)} human labels cannot be re-anchored "
+                               f"onto the new utterances ({shown}{'; ...' if len(lost) > 8 else ''}). "
+                               f"Pass --force to re-segment and drop them.")
+    old_ids = "SELECT utt_id FROM utterances WHERE version_season=? AND episode=?"
+    con.execute(f"DELETE FROM labels WHERE utt_id IN ({old_ids})", (vs, ep))
+    con.execute(f"DELETE FROM review_queue WHERE utt_id IN ({old_ids})", (vs, ep))
+    con.execute(f"DELETE FROM utterance_cues WHERE utt_id IN ({old_ids})", (vs, ep))
     con.execute("DELETE FROM utterances WHERE version_season=? AND episode=?", (vs, ep))
+    try:
+        con.execute("DELETE FROM utt_splits WHERE base_utt_id LIKE ?", (f"{vs}_E{ep:02d}_U%",))
+    except sqlite3.OperationalError:
+        pass
     urows, ucrows = [], []
     for u in utts:
         uid = ids.utt_id(vs, ep, u.idx)
@@ -381,6 +514,16 @@ def segment_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: in
                        sdh_name, sdh_speaker_id, sdh_resolution, is_italic, domain_hint, align_ok, flags, n_words)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", urows)
     con.executemany("INSERT OR REPLACE INTO utterance_cues (utt_id, cue_id, line_indices) VALUES (?,?,?)", ucrows)
+    span = {r[0]: r for r in urows}
+    for uid, r in inherited.items():
+        _, _, _, _, a, b, text = span[uid][:7]
+        con.execute("""INSERT OR REPLACE INTO labels (utt_id, speaker_id, source, confidence, top_candidates, domain,
+                       labeled_at, version_season, episode, start_s, end_s, text)
+                       VALUES (?,?,?,1.0,?,?,datetime('now'),?,?,?,?,?)""",
+                    (uid, r["speaker_id"], r["source"], json.dumps({"reanchored_from": r["utt_id"]}), span[uid][13],
+                     vs, ep, a, b, text))
+    stats["n_labels_reanchored"], stats["n_labels_lost"] = len(inherited), len(lost)
+    stats["n_card_checks_remapped"] = _remap_card_checks(con, vs, ep, remap_utt_ids(old_keys, new_keys))
     con.execute("""UPDATE episodes SET recap_end_s=?, preview_start_s=?, n_utterances=?, status='segmented'
                    WHERE version_season=? AND episode=?""", (stats["recap_end_s"], stats["preview_start_s"], len(utts), vs, ep))
     con.commit()

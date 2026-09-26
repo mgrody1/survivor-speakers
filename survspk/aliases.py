@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -41,8 +42,17 @@ class Resolver:
         self.season_aliases: dict[str, dict[str, str]] = {
             vs: {normalize_token(k): v for k, v in (m or {}).items()} for vs, m in (cfg.get("seasons") or {}).items()
         }
-        self._con = sqlite3.connect(f"file:{settings.survivor_db_path}?mode=ro", uri=True)
-        self._con.row_factory = sqlite3.Row
+        self._local = threading.local()     # one read-only connection per thread: the review UI serves requests from a
+                                            # thread pool, and a sqlite connection refuses use outside its own thread
+
+    @property
+    def _con(self) -> sqlite3.Connection:
+        con = getattr(self._local, "con", None)
+        if con is None:
+            con = sqlite3.connect(f"file:{self.settings.survivor_db_path}?mode=ro", uri=True)
+            con.row_factory = sqlite3.Row
+            self._local.con = con
+        return con
 
     # ---- per-season cast maps ----
     @lru_cache(maxsize=128)

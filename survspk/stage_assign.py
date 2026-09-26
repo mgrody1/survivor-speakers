@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from . import db as dbm
 from .config import Settings
 from .stage_bank import DOMAINS, BankEntry, load_bank, load_utterances, load_vectors
 
@@ -34,6 +35,14 @@ class Thresholds:
     floor: float = 0.35
     purity_min_s: float = 1.0          # utterances shorter than this do not vote on a run's purity
     score_mode: str = "centroid"       # centroid | exemplar | blend
+    auto_min_s: float = 2.0            # a group with less speech than this gets no auto label (audits: US47 2/9 right
+                                       # under 2 s vs 62/66 above; US45 E01-02 most misses were sub-2 s)
+    voice_split: bool = True           # cut out lines whose own voice clearly prefers someone else (two people
+                                       # alternating inside one run; US45 E07 audit)
+    voice_split_margin: float = 0.08   # how much more the line's voice must score its own best speaker than the group's
+    voice_split_confident: bool = False  # True: the line must also be confidently someone else on its own. False won
+                                         # on unreviewed US45 E03-13 / US47 E04-14: caption-name agreement on confident
+                                         # runs 86.9 -> 90.1% / 89.1 -> 91.0%, auto share -2.5 points
 
     @classmethod
     def from_settings(cls, s: Settings) -> "Thresholds":
@@ -41,7 +50,10 @@ class Thresholds:
         b = s.raw.get("bank", {})
         return cls(accept=float(t.get("accept", 0.55)), margin=float(t.get("margin", 0.08)),
                    floor=float(t.get("floor", 0.35)), purity_min_s=float(t.get("purity_min_s", 1.0)),
-                   score_mode=str(b.get("score_mode", "centroid")))
+                   score_mode=str(b.get("score_mode", "centroid")), auto_min_s=float(t.get("auto_min_s", 2.0)),
+                   voice_split=bool(t.get("voice_split", True)),
+                   voice_split_margin=float(t.get("voice_split_margin", 0.08)),
+                   voice_split_confident=bool(t.get("voice_split_confident", False)))
 
 
 @dataclass
@@ -137,6 +149,48 @@ def split_run(vecs: list[np.ndarray | None], durs: list[float], scorer: Scorer, 
     return groups
 
 
+def _split_on_voice(groups: list[list[int]], vecs, durs, scorer: Scorer, domain: str, th: Thresholds) -> list[list[int]]:
+    """Voice purity split. Within a group whose pooled voice is confidently one speaker, a line of at least
+    purity_min_s whose own voice confidently names someone else, and scores that someone at least `margin` above the
+    group's speaker, is another person's turn (two people alternating inside one caption run). Cut such lines out
+    into their own contiguous groups; each is then scored alone, and queued if it is not confident on its own."""
+    out: list[list[int]] = []
+    for idxs in groups:
+        vv = [vecs[i] for i in idxs if vecs[i] is not None]
+        dd = [durs[i] for i in idxs if vecs[i] is not None]
+        if len(idxs) < 2 or len(vv) < 2:
+            out.append(idxs)
+            continue
+        g = decide(scorer.rank(pool(vv, dd), domain), th)
+        if not (g.confident and g.pred):
+            out.append(idxs)
+            continue
+        flags = []
+        for i in idxs:
+            v, d = vecs[i], durs[i]
+            if v is None or d < th.purity_min_s:
+                flags.append(None)                        # too short to judge: follows its neighbour
+                continue
+            rank = scorer.rank(v, domain)
+            s_i = decide(rank, th)
+            own = dict(rank).get(g.pred, 0.0)
+            ok = s_i.confident or not th.voice_split_confident
+            flags.append(bool(ok and s_i.pred and s_i.pred != g.pred and s_i.score - own >= th.voice_split_margin))
+        if not any(f for f in flags if f):
+            out.append(idxs)
+            continue
+        cur, cur_flag = [], None
+        for i, f in zip(idxs, flags):
+            f = cur_flag if f is None else f
+            if cur and f != cur_flag:
+                out.append(cur)
+                cur = []
+            cur.append(i)
+            cur_flag = f
+        out.append(cur)
+    return out
+
+
 def _split_on_mentions(groups: list[list[int]], g: pd.DataFrame, vecs, durs, scorer: Scorer, domain: str,
                        th: Thresholds, resolver, vs: str) -> list[list[int]]:
     """Text-driven purity split. If a confidently predicted group contains utterances that name the predicted
@@ -224,12 +278,32 @@ class RunResult:
     extra: dict = field(default_factory=dict)
 
 
+def rolling_episodes(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, variant: str,
+                     model: str | None = None) -> list[int]:
+    """Episodes before `ep` with lines and embeddings: what a rolling bank for `ep` learns from."""
+    from .stage_embed import embedding_path
+    rows = con.execute("""SELECT episode FROM episodes WHERE version_season=? AND episode<? AND COALESCE(n_utterances, 0) > 0
+                          ORDER BY episode""", (vs, ep)).fetchall()
+    return [r[0] for r in rows if embedding_path(settings, vs, r[0], variant, model or settings.embed.model).exists()]
+
+
 def assign_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, variant: str | None = None,
                    model: str | None = None, bank_as_of: int | None = None, resolver=None,
-                   write: bool = True) -> tuple[pd.DataFrame, dict]:
+                   write: bool = True, rolling: bool | None = None) -> tuple[pd.DataFrame, dict]:
+    """Label an episode's runs from the bank. With `rolling` (default: config bank.rolling, on unless a bank_as_of is
+    given), the bank is first refit from every earlier episode's trusted labels, so a season's later episodes learn
+    from the caption names, name cards and human checks of the episodes before them."""
     t0 = time.time()
     variant = variant or settings.audio.variant
     th = Thresholds.from_settings(settings)
+    if rolling is None:
+        rolling = bank_as_of is None and bool(settings.raw.get("bank", {}).get("rolling", True))
+    rolled = None
+    if rolling:
+        prev = rolling_episodes(settings, con, vs, ep, variant, model)
+        if prev:
+            from .stage_bank import build_bank
+            rolled = build_bank(settings, con, vs, prev, variant=variant, model=model, as_of=ep - 1, resolver=resolver)
     bank, used = load_bank(con, vs, bank_as_of if bank_as_of is not None else ep - 1)
     if not bank:
         raise LookupError(f"no speaker bank for {vs} (as of <= {bank_as_of if bank_as_of is not None else ep - 1}); "
@@ -256,6 +330,8 @@ def assign_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int
         vecs = [v if isinstance(v, np.ndarray) else None for v in g.vector]
         durs = g.dur.tolist()
         groups = split_run(vecs, durs, scorer, domain, th) if len(g) > 1 else [list(range(len(g)))]
+        if th.voice_split:
+            groups = _split_on_voice(groups, vecs, durs, scorer, domain, th)
         if resolver is not None:
             groups = _split_on_mentions(groups, g, vecs, durs, scorer, domain, th, resolver, vs)
         for sub, idxs in enumerate(groups):
@@ -269,6 +345,9 @@ def assign_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int
                 # (US47E02 23:13 "With Sam, I am telling him..." -> Sam at 0.79; it is Andy). Queue it.
                 if resolver is not None and sc.confident and sc.pred and resolver.mentions(full_text, sc.pred, vs):
                     sc.decision = "name_mentioned"
+                # too little speech to trust an auto label: leave it unlabelled (not queued; nobody can tell either)
+                if sc.confident and float(gg.dur.sum()) < th.auto_min_s:
+                    sc.decision = "too_short"
             else:
                 sc = Scored(None, 0.0, 0.0, [], "no_bank")
                 sc.decision = "too_short"
@@ -300,6 +379,7 @@ def assign_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int
     bankable = scorers["body"].bankable()
     stats = {
         "version_season": vs, "episode": ep, "bank_as_of": used, "variant": variant,
+        "bank_rolled_from": rolled["episodes"] if rolled else None,
         "n_candidates": len(body_c), "n_bankable": len(bankable),
         "unbankable": sorted(body_c - bankable),
         "n_runs": int(len(df)), "n_split_runs": int(df.split.sum()),
@@ -390,4 +470,5 @@ def _write(con: sqlite3.Connection, vs: str, ep: int, results: list[RunResult], 
     con.execute("INSERT OR REPLACE INTO metrics (version_season, episode, key, value, payload, computed_at) VALUES (?,?,?,?,?,datetime('now'))",
                 (vs, ep, "assign_summary", stats.get("sdh_agreement_runs"), json.dumps({k: v for k, v in stats.items() if not isinstance(v, pd.DataFrame)}, default=str)))
     con.commit()
+    dbm.backfill_label_spans(con)
     stats["n_labels_written"], stats["n_queued"] = n_labels, n_queue

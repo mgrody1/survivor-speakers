@@ -9,3 +9,4 @@ dist/
 Archive.zip
 corpus/audio/
 .DS_Store
+snapshot_for_claude.tgz
