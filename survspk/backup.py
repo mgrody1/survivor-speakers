@@ -89,7 +89,8 @@ def _write(path: Path, cols: list[str], rows) -> int:
         w = csv.writer(f)
         w.writerow(cols)
         for r in rows:
-            w.writerow([r[c] for c in cols])
+            keys = set(r.keys())
+            w.writerow([r[c] if c in keys else None for c in cols])      # a column newer than this database: blank
             n += 1
     return n
 
@@ -124,7 +125,7 @@ def export_labels(con: sqlite3.Connection, out_dir: Path) -> dict:
             for r in q("SELECT * FROM audit_verdicts ORDER BY version_season, episode, utt_id")]
     counts["audit_verdicts.csv"] = _write(out_dir / "audit_verdicts.csv",
                                           ["utt_id", "version_season", "episode", "run_id", "group_key", "pred_speaker",
-                                           "pred_score", "verdict", "speaker_id", "prev_label", "created_at"], rows)
+                                           "pred_score", "verdict", "speaker_id", "prev_label", "created_at", "sample"], rows)
     rows = []
     for r in q("SELECT * FROM utt_splits ORDER BY base_utt_id"):
         orig = _json(r["original"]) or {}
@@ -144,6 +145,10 @@ def export_labels(con: sqlite3.Connection, out_dir: Path) -> dict:
         out_dir / "split_suggestions.csv",
         ["utt_id", "version_season", "episode", "t_cut", "left_spk", "right_spk", "second_s", "contrast", "status", "created_at"],
         q("SELECT * FROM split_suggestions WHERE status IN ('accepted', 'dismissed', 'auto') ORDER BY version_season, episode, utt_id"))
+    counts["music_labels.csv"] = _write(
+        out_dir / "music_labels.csv",
+        ["version_season", "episode", "t0", "t1", "cue", "subjects", "model_cue", "created_at"],
+        q("SELECT * FROM music_labels ORDER BY version_season, episode, t0"))
     per = [dict(r) for r in con.execute(
         """SELECT u.version_season AS vs, COUNT(DISTINCT u.episode) AS episodes, SUM(l.source='human') AS human,
                   SUM(l.source='chyron') AS chyron FROM labels l JOIN utterances u USING (utt_id)

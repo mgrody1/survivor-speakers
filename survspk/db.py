@@ -204,6 +204,19 @@ CREATE TABLE IF NOT EXISTS audit_verdicts (
 );
 CREATE INDEX IF NOT EXISTS audit_ep ON audit_verdicts(version_season, episode);
 
+CREATE TABLE IF NOT EXISTS music_labels (
+    -- review UI "music cues": what kind of music the editors put under a scene, and who the scene is about
+    version_season TEXT NOT NULL,
+    episode        INTEGER NOT NULL,
+    t0             REAL NOT NULL,      -- scene start, audio seconds
+    t1             REAL NOT NULL,
+    cue            TEXT NOT NULL,      -- dodo | strategy | ominous | tense | sad | triumphant | upbeat | eerie | other | none
+    subjects       TEXT,               -- json list of castaway ids the music is about (not always the speakers)
+    model_cue      TEXT,               -- what the model guessed when the scene was shown
+    created_at     TEXT,
+    PRIMARY KEY (version_season, episode, t0)
+);
+
 CREATE TABLE IF NOT EXISTS split_suggestions (
     -- lines that sound like two people (survspk.split_detect): where the voice changes and who each side is
     utt_id         TEXT PRIMARY KEY,
@@ -234,6 +247,9 @@ CREATE TABLE IF NOT EXISTS card_checks (
 
 # Columns added after the first release; applied by migrate() so existing databases keep working.
 MIGRATIONS: dict[str, dict[str, str]] = {
+    "audit_verdicts": {
+        "sample": "TEXT",                  # random (the precision sample; NULL on old rows) | suspect (likely errors)
+    },
     "episodes": {
         "audio_vocals_center_path": "TEXT",
         "audio_variants": "TEXT",          # json {variant: path}
@@ -261,6 +277,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
     },
     "labels": {
         "run_id": "INTEGER",               # run the utterance was scored in (assign pools runs)
+        "p_right": "REAL",                 # calibrator: chance the auto label is right (survspk calibrate)
         "margin": "REAL",
         # where the label sits in the episode, so it can be re-anchored after a re-segment (utt ids are positional)
         "version_season": "TEXT",

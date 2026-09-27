@@ -307,3 +307,91 @@ def test_two_voices_dismiss_takes_a_json_body(client):
     c, r = client
     uid = c._ids[0][0]
     assert c.post("/api/two_voices/dismiss", json={"utt_id": uid}).status_code == 200
+
+
+def test_music_scenes_label_and_unlabel(client):
+    c, r = client
+    eps = c.get("/api/music_episodes").json()
+    assert {(e["vs"], e["ep"]) for e in eps} >= {("US99", 1), ("US99", 2)} and all(e["n_labeled"] == 0 for e in eps)
+    m = c.get("/api/music/US99/2").json()
+    assert m["model_file"] is None and {x["key"] for x in m["cues"]} >= {"dodo", "strategy", "none"}
+    sc = m["scenes"]
+    assert len(sc) >= 2 and not m["done"]
+    assert all(x["t1"] - x["t0"] <= 45.0 + 5.0 and x["lines"] and x["guess"] is None for x in sc)
+    assert len({x["t0"] for x in sc}) == len(sc)                            # the round-robin keeps each scene once
+    x = sc[0]
+    assert c.post("/api/music_label", json={"vs": "US99", "ep": 2, "t0": x["t0"], "t1": x["t1"], "cue": "bogus"}).status_code == 400
+    res = c.post("/api/music_label", json={"vs": "US99", "ep": 2, "t0": x["t0"], "t1": x["t1"], "cue": "dodo",
+                                           "subjects": ["S_A"], "model_cue": None}).json()
+    assert res["n"] == 1
+    m2 = c.get("/api/music/US99/2").json()
+    assert len(m2["scenes"]) == len(sc) - 1 and m2["done"][0]["label"] == {"cue": "dodo", "subjects": ["S_A"]}
+    assert m2["stats"] == {"dodo": 1}
+    # relabelling the same scene replaces it
+    c.post("/api/music_label", json={"vs": "US99", "ep": 2, "t0": x["t0"], "t1": x["t1"], "cue": "strategy", "subjects": []})
+    assert c.get("/api/music/US99/2").json()["stats"] == {"strategy": 1}
+    c.post("/api/music_unlabel", json={"vs": "US99", "ep": 2, "t0": x["t0"]})
+    assert len(c.get("/api/music/US99/2").json()["scenes"]) == len(sc)
+
+
+def test_music_model_guess_orders_the_queue(client, tmp_path):
+    c, r = client
+    sc = c.get("/api/music/US99/2").json()["scenes"]
+    last = max(sc, key=lambda x: x["t0"])
+    uids = [u for run in c._ids for u in run]
+    rows = c._con.execute("SELECT utt_id, start_s FROM utterances WHERE version_season='US99' AND episode=2").fetchall()
+    p = tmp_path / "cues.csv"
+    with open(p, "w") as f:
+        f.write("version_season,episode,utt_id,cue_goofy,cue_tense\n")
+        for uid, t in rows:
+            hot = last["t0"] - 0.01 <= t <= last["t1"]
+            f.write(f"US99,2,{uid},{0.9 if hot else 0.1},{0.1 if hot else 0.9}\n")
+    assert uids
+    c._s.raw.setdefault("music", {})["cues_csv"] = str(p)
+    try:
+        m = c.get("/api/music/US99/2").json()
+        assert m["model_file"] == "cues.csv"
+        top = m["scenes"][0]
+        assert top["t0"] == last["t0"] and top["guess"] == "dodo" and top["model"]["dodo"] == 0.9   # goofy -> dodo
+    finally:
+        c._s.raw["music"].pop("cues_csv", None)
+
+
+def test_likely_errors_come_after_the_sample_and_stay_out_of_the_precision(client):
+    from survspk.calibrate import FEATURES, Calibrator, model_path
+
+    c, r = client
+    a = c.get("/api/audit/US99/2?n=50").json()
+    assert a["calibrated"] is False and all("p_right" not in g for g in a["groups"])
+    # a calibrator that only looks at duration: longer runs are likelier right
+    coef = [0.0] * len(FEATURES)
+    coef[FEATURES.index("log_dur")] = 3.0
+    Calibrator(FEATURES, [0.0] * len(FEATURES), [1.0] * len(FEATURES), coef, -6.0).save(model_path(c._s))
+    a = c.get("/api/audit/US99/2?n=50").json()
+    assert a["calibrated"] and all(0 <= g["p_right"] <= 1 for g in a["groups"])
+    sus = c.get("/api/audit/US99/2?n=50&suspects=true").json()["groups"]
+    assert sus and [g["p_right"] for g in sus] == sorted(g["p_right"] for g in sus) and sus[0]["reasons"] == ["suspect"]
+    g = sus[0]
+    res = c.post("/api/audit_verdict", json={"utt_ids": g["utt_ids"], "speaker_id": "S_C", "pred_speaker": g["pred"],
+                                             "pred_score": g["pred_score"], "sample": "suspect"}).json()
+    st = res["stats"]
+    assert st["n"] == 0 and st["precision"] is None and st["n_suspect"] == 1
+    assert st["n_suspect_wrong"] == (0 if g["pred"] == "S_C" else 1)
+    assert g["utt_ids"] not in [x["utt_ids"] for x in c.get("/api/audit/US99/2?n=50").json()["groups"]]
+    assert len(c.get("/api/audit/US99/2?n=1&suspects=true").json()["groups"]) == 0      # a check of 1 is done
+
+
+def test_queue_offers_the_calibrators_suggestion(client):
+    from survspk.calibrate import FEATURES, Calibrator, model_path
+
+    c, r = client
+    q = c.get("/api/queue/US99/2").json()
+    assert all("suggest" not in g for g in q["groups"])
+    n = len(FEATURES)
+    Calibrator(FEATURES, [0.0] * n, [1.0] * n, [0.0] * n, 2.0).save(model_path(c._s))      # p = 0.88 for all
+    q = c.get("/api/queue/US99/2").json()
+    und = [g for g in q["groups"] if g["audio_top"] and set(g["reasons"]) & {"low_margin", "no_candidate", "name_mentioned"}]
+    assert und and all(g["suggest"]["speaker_id"] == g["audio_top"][0][0] and abs(g["suggest"]["p"] - 0.881) < 0.01 for g in und)
+    Calibrator(FEATURES, [0.0] * n, [1.0] * n, [0.0] * n, -2.0).save(model_path(c._s))     # p = 0.12: no suggestion
+    q = c.get("/api/queue/US99/2").json()
+    assert all("suggest" not in g for g in q["groups"])

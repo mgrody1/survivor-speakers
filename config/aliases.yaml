@@ -68,3 +68,5 @@ seasons:
     TED: OTHER         # CBS promo announcer voice-over in the premiere file
   US44:
     WILL: OTHER        # non-cast speaker in E01 ("Can you sit back?")
+  US51:
+    KILBY: US0760      # Danny Kilby: the E01 SDH track names him by surname (25 lines)

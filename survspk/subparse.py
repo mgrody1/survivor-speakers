@@ -248,6 +248,7 @@ def quick_stats(path: Path) -> dict:
         "first_cue_s": cues[0].start_s,
         "last_cue_end_s": max(c.end_s for c in cues),
         "parse_error": None,
+        "n_names": sum(1 for c in cues for ln in c.lines if ln.sdh_name),     # NAME: lines, the speaker labels we use
     }
 
 
