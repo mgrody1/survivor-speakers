@@ -307,3 +307,51 @@ def test_two_voices_dismiss_takes_a_json_body(client):
     c, r = client
     uid = c._ids[0][0]
     assert c.post("/api/two_voices/dismiss", json={"utt_id": uid}).status_code == 200
+
+
+def test_music_scenes_label_and_unlabel(client):
+    c, r = client
+    eps = c.get("/api/music_episodes").json()
+    assert {(e["vs"], e["ep"]) for e in eps} >= {("US99", 1), ("US99", 2)} and all(e["n_labeled"] == 0 for e in eps)
+    m = c.get("/api/music/US99/2").json()
+    assert m["model_file"] is None and {x["key"] for x in m["cues"]} >= {"dodo", "strategy", "none"}
+    sc = m["scenes"]
+    assert len(sc) >= 2 and not m["done"]
+    assert all(x["t1"] - x["t0"] <= 45.0 + 5.0 and x["lines"] and x["guess"] is None for x in sc)
+    assert len({x["t0"] for x in sc}) == len(sc)                            # the round-robin keeps each scene once
+    x = sc[0]
+    assert c.post("/api/music_label", json={"vs": "US99", "ep": 2, "t0": x["t0"], "t1": x["t1"], "cue": "bogus"}).status_code == 400
+    res = c.post("/api/music_label", json={"vs": "US99", "ep": 2, "t0": x["t0"], "t1": x["t1"], "cue": "dodo",
+                                           "subjects": ["S_A"], "model_cue": None}).json()
+    assert res["n"] == 1
+    m2 = c.get("/api/music/US99/2").json()
+    assert len(m2["scenes"]) == len(sc) - 1 and m2["done"][0]["label"] == {"cue": "dodo", "subjects": ["S_A"]}
+    assert m2["stats"] == {"dodo": 1}
+    # relabelling the same scene replaces it
+    c.post("/api/music_label", json={"vs": "US99", "ep": 2, "t0": x["t0"], "t1": x["t1"], "cue": "strategy", "subjects": []})
+    assert c.get("/api/music/US99/2").json()["stats"] == {"strategy": 1}
+    c.post("/api/music_unlabel", json={"vs": "US99", "ep": 2, "t0": x["t0"]})
+    assert len(c.get("/api/music/US99/2").json()["scenes"]) == len(sc)
+
+
+def test_music_model_guess_orders_the_queue(client, tmp_path):
+    c, r = client
+    sc = c.get("/api/music/US99/2").json()["scenes"]
+    last = max(sc, key=lambda x: x["t0"])
+    uids = [u for run in c._ids for u in run]
+    rows = c._con.execute("SELECT utt_id, start_s FROM utterances WHERE version_season='US99' AND episode=2").fetchall()
+    p = tmp_path / "cues.csv"
+    with open(p, "w") as f:
+        f.write("version_season,episode,utt_id,cue_goofy,cue_tense\n")
+        for uid, t in rows:
+            hot = last["t0"] - 0.01 <= t <= last["t1"]
+            f.write(f"US99,2,{uid},{0.9 if hot else 0.1},{0.1 if hot else 0.9}\n")
+    assert uids
+    c._s.raw.setdefault("music", {})["cues_csv"] = str(p)
+    try:
+        m = c.get("/api/music/US99/2").json()
+        assert m["model_file"] == "cues.csv"
+        top = m["scenes"][0]
+        assert top["t0"] == last["t0"] and top["guess"] == "dodo" and top["model"]["dodo"] == 0.9   # goofy -> dodo
+    finally:
+        c._s.raw["music"].pop("cues_csv", None)

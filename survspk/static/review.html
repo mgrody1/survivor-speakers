@@ -184,6 +184,25 @@
   .chg .b:hover { border-color:var(--accent); }
   .chg .play { color:var(--dim); cursor:pointer; font-size:12px; }
   .chglist { max-height:320px; overflow:auto; margin-top:8px; }
+  /* music cues */
+  .mcues { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
+  .mcue { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--line); border-radius:7px; cursor:pointer; font-size:14px; }
+  .mcue .key { min-width:22px; height:22px; border-radius:5px; background:#2a3138; display:grid; place-items:center; font-weight:700; color:var(--accent); font-size:12px; }
+  .mcue:hover { border-color:var(--accent); }
+  .mcue.on { border-color:var(--accent); background:#262117; }
+  .mcue .p { margin-left:auto; color:var(--dim); font-size:11px; }
+  .msubj { display:flex; flex-wrap:wrap; gap:5px; margin:4px 0 8px; }
+  .msubj span { border:1px solid var(--line); border-radius:12px; padding:2px 9px; cursor:pointer; font-size:13px; }
+  .msubj span.on { border-color:var(--ok); background:#17241c; color:var(--ok); }
+  .msubj span.named { border-style:dashed; }
+  .msave { display:inline-block; margin-top:8px; padding:6px 12px; border-radius:6px; background:var(--ok); color:#0d1a12; font-weight:600; cursor:pointer; }
+  .msave.off { background:#2a3138; color:var(--dim); cursor:default; }
+  .mline { display:flex; gap:8px; font-size:14px; padding:2px 0; }
+  .mline .t { color:var(--dim); font-size:12px; flex:none; width:40px; }
+  .mline .who { color:var(--ink); font-weight:600; flex:none; }
+  .mline .txt { color:var(--dim); }
+  body.musicmode .pseudo, body.musicmode #cov, body.musicmode #covnote, body.musicmode .covfoot { display:none; }
+  body.musicmode .help.labelonly { display:none !important; }
   /* bulk confirm */
   .bulk { font-size:13px; line-height:1.6; }
   .bulk select, .bulk input { background:#0f1215; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:4px 6px; font:inherit; }
@@ -198,7 +217,7 @@
   <h1>survspk review</h1>
   <select id="episode"></select>
   <select id="mode" title="queue: runs assign could not decide · audit: a random sample of runs assign labelled on its own — confirm or correct them, and the precision of the auto labels comes out">
-    <option value="queue">queue</option><option value="audit">audit auto labels</option><option value="cards">check name cards</option></select>
+    <option value="queue">queue</option><option value="audit">audit auto labels</option><option value="cards">check name cards</option><option value="music">music cues</option></select>
   <span class="count" id="count" title="open groups (runs of lines) and the lines in them"></span>
   <span class="count" id="auditstat"></span>
   <span class="spacer"></span>
@@ -251,6 +270,11 @@
         The card appears where the dashed line is. The show usually puts it up a few seconds into the person's first line,
         so the answer is often the line just above it, but not always: listen. The picture is the frame just after the card appears.
       </div>
+      <div class="help" id="musichelp" style="display:none">
+        <kbd>1</kbd>–<kbd>9</kbd> the kind of music &nbsp; <kbd>0</kbd> no music (saves) &nbsp; click names for who the scene is about &nbsp; <kbd>↩</kbd> save<br>
+        <kbd>space</kbd> replay &nbsp; <kbd>,</kbd> slower &nbsp; <kbd>→</kbd>/<kbd>n</kbd> skip &nbsp; <kbd>←</kbd> back &nbsp; <kbd>z</kbd> undo &nbsp; <kbd>/</kbd> search everyone<br>
+        The model's guess is pre-selected (↩ keeps it). Scenes come in three kinds, in turn: the model's surest dodo scenes, the ones it is least sure about, and a random draw.
+      </div>
       <div class="help labelonly">
         <kbd>1</kbd>–<kbd>9</kbd> pick candidate &nbsp; <kbd>s</kbd> SDH name &nbsp; <kbd>c</kbd> chyron &nbsp; <kbd>a</kbd> audio top-1 &nbsp; <kbd>y</kbd> confirm the auto label (audit)<br>
         <kbd>o</kbd> other &nbsp; <kbd>u</kbd> unknown &nbsp; <kbd>x</kbd> no speech &nbsp; <kbd>/</kbd> search<br>
@@ -292,6 +316,20 @@ function toast(m, ms = 1600) { const t = $('#toast'); t.textContent = m; t.class
 const mmss = t => `${String(Math.floor(t/60)).padStart(2,'0')}:${String(Math.floor(t%60)).padStart(2,'0')}`;
 
 async function loadEpisodes() {
+  document.body.classList.toggle('musicmode', mode() === 'music');
+  $('#musichelp').style.display = mode() === 'music' ? '' : 'none';
+  if (mode() === 'music') {
+    const eps = await api('/api/music_episodes');
+    window._eps = eps;
+    const sel = $('#episode');
+    sel.innerHTML = eps.map(e => `<option value="${e.vs}|${e.ep}">${e.vs} E${String(e.ep).padStart(2,'0')} · ${e.n_labeled} scenes labelled</option>`).join('');
+    document.body.classList.remove('cardmode'); $('#cardhelp').style.display = 'none';
+    const saved = localStorage.getItem('survspk.ep');
+    if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
+    sel.onchange = () => { localStorage.setItem('survspk.ep', sel.value); loadQueue(); };
+    if (eps.length) await loadQueue();
+    return;
+  }
   const eps = await api('/api/episodes');
   window._eps = eps;
   const sel = $('#episode');
@@ -318,6 +356,7 @@ async function loadQueue() {
   [vs, ep] = $('#episode').value.split('|'); ep = +ep;
   loadHistory();
   if (mode() === 'cards') return loadCards(token);
+  if (mode() === 'music') return loadMusic(token);
   data = await api(mode() === 'audit' ? `/api/audit/${vs}/${ep}` : `/api/queue/${vs}/${ep}`);
   window._cov = await api(`/api/coverage/${vs}/${ep}`);
   if (token !== loadToken) return;                          // a newer load started while this one waited
@@ -680,7 +719,7 @@ function renderGrid() {
   const rows = all.filter(c => !q || c.name.toLowerCase().includes(q));
   const pseudo = new Set(data.pseudo.map(x => x.id));
   $('#grid').innerHTML = rows.map((c, k) => `<div data-id="${c.id}" class="${k === 0 && q ? 'hl' : ''}">${c.name}${pseudo.has(c.id) ? '' : `<span class="voice" data-v="${c.id}" title="hear them">♪</span>`}</div>`).join('');
-  $('#grid').querySelectorAll('div').forEach(el => el.onclick = () => label(el.dataset.id));
+  $('#grid').querySelectorAll('div').forEach(el => el.onclick = () => mode() === 'music' ? toggleSubject(el.dataset.id) : label(el.dataset.id));
   wireVoices($('#grid'));
   window._grid = rows;
 }
@@ -896,13 +935,14 @@ async function undo() {
   try {
     if (h.card) { await api('/api/card_uncheck', h.card); }
     else if (h.bulk) { await api('/api/bulk_unconfirm', {utt_ids: h.bulk}); }
+    else if (h.music) { await api('/api/music_unlabel', h.music); }
     else if (h.split) { await api('/api/unsplit', {base_utt_id: h.split}); }
     else { await api('/api/unlabel', {utt_ids: h.ids}); }
   } catch (e) { toast('could not undo: ' + String(e.message || e).slice(0, 120), 4000); history.pop(); paintUndo(); return; }
   history.pop(); try { localStorage.setItem(histKey(), JSON.stringify(history)); } catch (e) {}
   toast(`undone: ${h.what}`);
   if (h.card) { await loadEpisodes(); focusCard(h.card); }
-  else if (h.bulk) { await loadQueue(); }
+  else if (h.bulk || h.music) { await loadQueue(); }
   else if (h.split) { await loadEpisodes(); focusOn(h.split); } else { await loadQueue(); focusOn(h.ids[0]); }
   paintUndo();
 }
@@ -910,9 +950,10 @@ $('#undo').onclick = () => undo();
 
 document.addEventListener('keydown', async e => {
   if (mode() === 'cards') { if (!e.metaKey && !e.ctrlKey && !e.altKey) cardKey(e); return; }
+  if (mode() === 'music' && document.activeElement !== $('#search')) { if (!e.metaKey && !e.ctrlKey && !e.altKey) musicKey(e); return; }
   const inSearch = document.activeElement === $('#search');
   if (inSearch) {
-    if (e.key === 'Enter') { const r = window._grid && window._grid[0]; if (r) { $('#search').value = ''; renderGrid(); label(r.id); $('#search').blur(); } }
+    if (e.key === 'Enter') { const r = window._grid && window._grid[0]; if (r) { $('#search').value = ''; renderGrid(); if (mode() === 'music') toggleSubject(r.id); else label(r.id); $('#search').blur(); } }
     if (e.key === 'Escape') { $('#search').value = ''; renderGrid(); $('#search').blur(); }
     return;
   }
@@ -944,6 +985,89 @@ $('#showframes').addEventListener('change', () => { store.set('survspk.frames', 
 $('#autoplay').addEventListener('change', () => { store.set('survspk.autoplay', $('#autoplay').checked); if (!$('#autoplay').checked && $('#player')) $('#player').pause(); });
 try { const m = localStorage.getItem('survspk.mode'); if (m) $('#mode').value = m; } catch (e) {}
 document.querySelectorAll('.pseudo div').forEach(el => el.onclick = () => label(el.dataset.id));
+// ------------------------------------------------------------------ music cues
+// What the editors play under a scene (dodo music, strategy, ominous...) and who it is about. A few labels per
+// episode train the cue model; the model's guess is shown pre-selected so confirming it is one key.
+let mscenes = [], mi = 0, mcue = null, msubj = new Set(), mdata = null;
+async function loadMusic(token) {
+  const d = await api(`/api/music/${vs}/${ep}`);
+  if (token !== loadToken) return;
+  mdata = d; data = {candidates: d.candidates, pseudo: []};
+  mscenes = d.scenes; mi = 0;
+  $('#banner').hidden = true; $('#changes').hidden = true; $('#bulkcard').hidden = true;
+  renderGrid(); showMusic();
+}
+function sceneStart(sc) {
+  mcue = sc.label ? sc.label.cue : null;
+  msubj = new Set(sc.label ? sc.label.subjects : []);
+}
+function showMusic() {
+  const box = $('#item');
+  const n = (mdata.stats ? Object.values(mdata.stats).reduce((a, b) => a + b, 0) : 0);
+  $('#count').textContent = `${mscenes.length - mi} scenes left here · ${n} labelled in all`;
+  $('#paneltitle').textContent = 'music under this scene';
+  paintPace();
+  if (mi >= mscenes.length) { box.innerHTML = '<div class="done">every scene in this episode is labelled<br><small>pick another episode</small></div>'; $('#cands').innerHTML = ''; $('#selbar').innerHTML = ''; return; }
+  const sc = mscenes[mi];
+  if (sc._shown !== true) { sceneStart(sc); sc._shown = true; }
+  const guess = sc.guess ? `model: ${sc.guess} ${Math.round(100 * (sc.model[sc.guess] || 0))}%` : 'no model guess yet';
+  box.innerHTML = `
+    <div class="meta"><span>${sc.mmss}</span><span>${sc.dur}s</span><span>scene ${mi + 1}/${mscenes.length}</span><span class="reason">${guess}</span></div>
+    <audio id="player" controls ${$('#autoplay').checked ? 'autoplay' : ''} src="/api/clip/${vs}/${ep}?start=${sc.t0}&end=${sc.t1}&variant=raw&pad=0.5"></audio>
+    <div class="frames" id="frames"></div>
+    <div style="margin-top:8px">${sc.lines.map(l => `<div class="mline"><span class="t">${l.mmss}</span><span class="who">${(l.speaker || '?').replace(/ \(.*\)$/, '')}</span><span class="txt">${l.text || ''}</span></div>`).join('')}</div>
+    <div class="help" style="margin-top:10px">Listen to the music, not the words: pick what the editors are playing, then who the scene is about (the butt of dodo music is often not the one talking).</div>`;
+  paintFrames(sc.t0, sc.t1);
+  paintMusicPanel();
+  const nx = mscenes[mi + 1]; if (nx && $('#showframes').checked) frameTimes(nx.t0, nx.t1).forEach(t => { const im = new Image(); im.src = frameUrl(t); });
+}
+function paintMusicPanel() {
+  const sc = mscenes[mi]; if (!sc) return;
+  const guessKey = mcue || sc.guess;
+  const nm = id => (mdata.candidates.find(c => c.id === id) || {name: id}).name.replace(/ \(.*\)$/, '');
+  const chips = [...sc.speakers.map(id => [id, '']), ...sc.named.map(id => [id, 'named']),
+                 ...[...msubj].filter(id => !sc.speakers.includes(id) && !sc.named.includes(id)).map(id => [id, ''])];
+  $('#selbar').innerHTML = '';
+  $('#cands').innerHTML = `<div class="mcues">` + mdata.cues.map((c, k) => {
+      const key = c.key === 'none' ? '0' : String(k + 1);
+      const p = sc.model && sc.model[c.key] != null ? `${Math.round(100 * sc.model[c.key])}%` : '';
+      return `<div class="mcue${guessKey === c.key ? ' on' : ''}" data-k="${c.key}"><span class="key">${key}</span>${c.label}<span class="p">${p}</span></div>`;
+    }).join('') + `</div>` +
+    `<div class="sub" style="margin-top:12px">about <span class="h">(click; the grid below adds anyone)</span></div>` +
+    `<div class="msubj">${chips.map(([id, cls]) => `<span class="${cls}${msubj.has(id) ? ' on' : ''}" data-id="${id}" title="${cls ? 'named in the scene' : 'speaks in the scene'}">${nm(id)}</span>`).join('') || '<span class="h">nobody we know speaks here</span>'}</div>` +
+    `<span class="msave${mcue || sc.guess ? '' : ' off'}" id="msave">save${mcue ? '' : sc.guess ? ' the guess' : ''} (↩)</span>`;
+  $('#cands').querySelectorAll('.mcue').forEach(el => el.onclick = () => { mcue = el.dataset.k; if (mcue === 'none') saveMusic(); else paintMusicPanel(); });
+  $('#cands').querySelectorAll('.msubj span[data-id]').forEach(el => el.onclick = () => toggleSubject(el.dataset.id));
+  $('#msave').onclick = () => saveMusic();
+}
+function toggleSubject(id) { if (msubj.has(id)) msubj.delete(id); else msubj.add(id); paintMusicPanel(); }
+async function saveMusic() {
+  const sc = mscenes[mi]; if (!sc) return;
+  const cue = mcue || sc.guess; if (!cue) { toast('pick the kind of music first'); return; }
+  const subjects = cue === 'none' ? [] : [...msubj];
+  await api('/api/music_label', {vs, ep, t0: sc.t0, t1: sc.t1, cue, subjects, model_cue: sc.guess});
+  pushHistory({music: {vs, ep, t0: sc.t0}, what: `scene ${sc.mmss} → ${cue}`});
+  notePace(1);
+  mdata.stats[cue] = (mdata.stats[cue] || 0) + 1;
+  sc.label = {cue, subjects};
+  toast(`${sc.mmss}: ${cue}${subjects.length ? ' · ' + subjects.length + ' subject' + (subjects.length > 1 ? 's' : '') : ''}`);
+  mi++; showMusic();
+}
+function musicKey(e) {
+  const sc = mscenes[mi];
+  if (e.key === ' ') { e.preventDefault(); const p = $('#player'); if (p) { p.currentTime = 0; p.play(); } return; }
+  if (e.key === 'ArrowRight' || e.key === 'n') { if (mi < mscenes.length - 1) { mi++; showMusic(); } return; }
+  if (e.key === 'ArrowLeft') { if (mi > 0) { mi--; showMusic(); } return; }
+  if (e.key === 'z') { undo(); return; }
+  if (e.key === 'Enter') { saveMusic(); return; }
+  if (e.key === '/') { e.preventDefault(); $('#search').focus(); return; }
+  if (e.key === ',') { const p = $('#player'); if (p) p.playbackRate = p.playbackRate > 0.8 ? 0.75 : 1.0; return; }
+  if (!sc) return;
+  if (e.key === '0') { mcue = 'none'; saveMusic(); return; }
+  const dg = /^Digit([1-9])$/.exec(e.code || '');
+  if (dg) { const c = mdata.cues[+dg[1] - 1]; if (c && c.key !== 'none') { mcue = c.key; paintMusicPanel(); } }
+}
+
 // ------------------------------------------------------------------ what the last refit changed
 let lastChanges = null;
 function paintChanges() {

@@ -144,6 +144,10 @@ def export_labels(con: sqlite3.Connection, out_dir: Path) -> dict:
         out_dir / "split_suggestions.csv",
         ["utt_id", "version_season", "episode", "t_cut", "left_spk", "right_spk", "second_s", "contrast", "status", "created_at"],
         q("SELECT * FROM split_suggestions WHERE status IN ('accepted', 'dismissed', 'auto') ORDER BY version_season, episode, utt_id"))
+    counts["music_labels.csv"] = _write(
+        out_dir / "music_labels.csv",
+        ["version_season", "episode", "t0", "t1", "cue", "subjects", "model_cue", "created_at"],
+        q("SELECT * FROM music_labels ORDER BY version_season, episode, t0"))
     per = [dict(r) for r in con.execute(
         """SELECT u.version_season AS vs, COUNT(DISTINCT u.episode) AS episodes, SUM(l.source='human') AS human,
                   SUM(l.source='chyron') AS chyron FROM labels l JOIN utterances u USING (utt_id)

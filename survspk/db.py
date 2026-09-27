@@ -204,6 +204,19 @@ CREATE TABLE IF NOT EXISTS audit_verdicts (
 );
 CREATE INDEX IF NOT EXISTS audit_ep ON audit_verdicts(version_season, episode);
 
+CREATE TABLE IF NOT EXISTS music_labels (
+    -- review UI "music cues": what kind of music the editors put under a scene, and who the scene is about
+    version_season TEXT NOT NULL,
+    episode        INTEGER NOT NULL,
+    t0             REAL NOT NULL,      -- scene start, audio seconds
+    t1             REAL NOT NULL,
+    cue            TEXT NOT NULL,      -- dodo | strategy | ominous | tense | sad | triumphant | upbeat | eerie | other | none
+    subjects       TEXT,               -- json list of castaway ids the music is about (not always the speakers)
+    model_cue      TEXT,               -- what the model guessed when the scene was shown
+    created_at     TEXT,
+    PRIMARY KEY (version_season, episode, t0)
+);
+
 CREATE TABLE IF NOT EXISTS split_suggestions (
     -- lines that sound like two people (survspk.split_detect): where the voice changes and who each side is
     utt_id         TEXT PRIMARY KEY,

@@ -92,9 +92,33 @@ class BulkConfirmIn(BaseModel):
     min_confidence: float = 0.8
 
 
+class MusicLabelIn(BaseModel):
+    vs: str
+    ep: int
+    t0: float
+    t1: float
+    cue: str
+    subjects: list[str] = []
+    model_cue: str | None = None
+
+
+class MusicUnlabelIn(BaseModel):
+    vs: str
+    ep: int
+    t0: float
+
+
 class DismissIn(BaseModel):
     utt_id: str
 
+
+MUSIC_CUES = [("dodo", "dodo / goofy"), ("strategy", "strategy / plotting"), ("ominous", "ominous / danger"),
+              ("tense", "tense / conflict"), ("sad", "sad / emotional"), ("triumphant", "triumphant / heroic"),
+              ("upbeat", "upbeat / fun"), ("eerie", "eerie / mysterious"), ("other", "other"), ("none", "no music")]
+MUSIC_MODEL_NAMES = {"goofy": "dodo"}       # the zero-shot model's names for the same cues
+SCENE_GAP_S = 6.0
+SCENE_MAX_S = 45.0
+SCENE_MIN_S = 3.0
 
 AUDIT_SAMPLE = 20                   # auto-labelled groups per episode in the audit sample (pooled over the season
                                     # in `audit-stats`; 20 an episode is ~3 min and ~280 verdicts a season)
@@ -786,6 +810,123 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
         total = c.execute("SELECT COUNT(*) AS n, SUM(end_s - start_s) AS secs FROM utterances WHERE version_season=? AND episode=? AND segment='body'",
                           (vs, ep)).fetchone()
         return {"by_source": [dict(r) for r in rows], "body_utts": total["n"], "body_secs": total["secs"]}
+
+
+    # ------------------------------------------------------------------ music cues: what the editors play under a scene
+    def music_model_path() -> Path:
+        m = s.raw.get("music", {}) or {}
+        if m.get("cues_csv"):
+            return Path(m["cues_csv"])
+        d = Path(s.paths.work_root).parent / "Gamebot/data_cache/nlp"
+        learned = d / "music_cues_learned.csv"          # music_cue_model.py, fit on these labels, once it exists
+        return learned if learned.exists() else d / "music_cues.csv"
+
+    def music_model(vs: str, ep: int) -> dict[str, dict[str, float]]:
+        """utt_id -> {cue: prob} from the cue model's CSV (zero-shot now, learned later), if it exists."""
+        import csv as _csv
+
+        path = music_model_path()
+        key = (str(path), path.stat().st_mtime if path.exists() else 0)
+        cache = state.setdefault("music_model", {})
+        if cache.get("key") != key:
+            rows: dict = {}
+            if path.exists():
+                with open(path) as f:
+                    for r in _csv.DictReader(f):
+                        rows.setdefault((r["version_season"], int(r["episode"])), {})[r["utt_id"]] = {
+                            MUSIC_MODEL_NAMES.get(k[4:], k[4:]): float(v) for k, v in r.items() if k.startswith("cue_") and v}
+            cache.clear()
+            cache.update(key=key, rows=rows)
+        return cache["rows"].get((vs, ep), {})
+
+    def music_scenes(c: sqlite3.Connection, vs: str, ep: int) -> list[dict]:
+        """Runs of body lines less than SCENE_GAP_S apart, cut at SCENE_MAX_S."""
+        rows = c.execute("""SELECT u.utt_id, u.start_s, u.end_s, u.text, l.speaker_id FROM utterances u
+                            LEFT JOIN labels l USING (utt_id) WHERE u.version_season=? AND u.episode=? AND u.segment='body'
+                            ORDER BY u.start_s""", (vs, ep)).fetchall()
+        scenes, cur = [], []
+        for r in rows:
+            if cur and (r["start_s"] - cur[-1]["end_s"] > SCENE_GAP_S or r["end_s"] - cur[0]["start_s"] > SCENE_MAX_S):
+                scenes.append(cur)
+                cur = []
+            cur.append(dict(r))
+        if cur:
+            scenes.append(cur)
+        return [sc for sc in scenes if sc[-1]["end_s"] - sc[0]["start_s"] >= SCENE_MIN_S]
+
+    @app.get("/api/music_episodes")
+    def music_episodes():
+        c = con()
+        eps = [dict(r) for r in c.execute("""SELECT version_season AS vs, episode AS ep FROM utterances
+                                            GROUP BY 1, 2 HAVING SUM(segment='body') > 0 ORDER BY 1, 2""")]
+        n = {(r[0], r[1]): r[2] for r in c.execute("SELECT version_season, episode, COUNT(*) FROM music_labels GROUP BY 1, 2")}
+        for e in eps:
+            e["n_labeled"] = n.get((e["vs"], e["ep"]), 0)
+        return eps
+
+    @app.get("/api/music/{vs}/{ep}")
+    def music(vs: str, ep: int):
+        """Scenes to label, the model's guess for each, and who is in them (speakers, and players named in them).
+        Order: the model's most confident dodo scenes, its least certain scenes and a fixed shuffle, taken in turn,
+        so a few labels cover what the model gets wrong and what it cannot tell apart."""
+        import hashlib
+        import math
+
+        c = con()
+        names, order = names_for(vs, ep)
+        r = resolver()
+        pats = r.mention_patterns(vs) if r is not None and hasattr(r, "mention_patterns") else {}
+        done = {round(row[0], 2): dict(zip(("t0", "cue", "subjects"), row)) for row in c.execute(
+            "SELECT t0, cue, subjects FROM music_labels WHERE version_season=? AND episode=?", (vs, ep))}
+        model = music_model(vs, ep)
+        out = []
+        for sc in music_scenes(c, vs, ep):
+            t0, t1 = sc[0]["start_s"], sc[-1]["end_s"]
+            probs = [model[u["utt_id"]] for u in sc if u["utt_id"] in model]
+            guess = {}
+            if probs:
+                keys = set().union(*probs)
+                guess = {k: round(sum(p.get(k, 0.0) for p in probs) / len(probs), 3) for k in keys}
+            speakers = [u["speaker_id"] for u in sc if u["speaker_id"] in names]
+            named = [cid for cid, rx in pats.items() if cid in names and any(rx.search(u["text"] or "") for u in sc)]
+            lab = done.get(round(t0, 2))
+            out.append({"t0": t0, "t1": t1, "mmss": _mmss(t0), "dur": round(t1 - t0, 1),
+                        "lines": [{"mmss": _mmss(u["start_s"]), "speaker": names.get(u["speaker_id"], u["speaker_id"]) if u["speaker_id"] else None,
+                                   "text": u["text"]} for u in sc],
+                        "speakers": list(dict.fromkeys(speakers)), "named": [x for x in dict.fromkeys(named) if x not in speakers],
+                        "model": guess, "guess": max(guess, key=guess.get) if guess else None,
+                        "label": {"cue": lab["cue"], "subjects": json.loads(lab["subjects"] or "[]")} if lab else None})
+        todo = [x for x in out if not x["label"]]
+        h = lambda x: hashlib.sha1(f"{vs}|{ep}|{x['t0']:.2f}".encode()).hexdigest()  # noqa: E731
+        ent = lambda x: -sum(p * math.log(p) for p in x["model"].values() if p > 0) if x["model"] else 0.0  # noqa: E731
+        lists = [sorted(todo, key=lambda x: -x["model"].get("dodo", 0.0)), sorted(todo, key=lambda x: -ent(x)), sorted(todo, key=h)]
+        seen, ranked = set(), []
+        for trio in zip(*lists):
+            for x in trio:
+                if x["t0"] not in seen:
+                    seen.add(x["t0"]); ranked.append(x)
+        stats = dict(c.execute("SELECT cue, COUNT(*) FROM music_labels GROUP BY cue").fetchall())
+        return {"vs": vs, "ep": ep, "cues": [{"key": k, "label": v} for k, v in MUSIC_CUES],
+                "candidates": [{"id": x, "name": names[x]} for x in order], "scenes": ranked,
+                "done": [x for x in out if x["label"]], "stats": stats, "model_file": music_model_path().name if model else None}
+
+    @app.post("/api/music_label")
+    def music_label(inp: MusicLabelIn):
+        if inp.cue not in dict(MUSIC_CUES):
+            raise HTTPException(400, f"unknown cue {inp.cue}")
+        c = con()
+        c.execute("""INSERT OR REPLACE INTO music_labels (version_season, episode, t0, t1, cue, subjects, model_cue, created_at)
+                     VALUES (?,?,?,?,?,?,?,datetime('now'))""",
+                  (inp.vs, inp.ep, round(inp.t0, 3), round(inp.t1, 3), inp.cue, json.dumps(inp.subjects), inp.model_cue))
+        c.commit()
+        return {"ok": True, "n": c.execute("SELECT COUNT(*) FROM music_labels").fetchone()[0]}
+
+    @app.post("/api/music_unlabel")
+    def music_unlabel(inp: MusicUnlabelIn):
+        c = con()
+        c.execute("DELETE FROM music_labels WHERE version_season=? AND episode=? AND ABS(t0 - ?) < 0.01", (inp.vs, inp.ep, inp.t0))
+        c.commit()
+        return {"ok": True}
 
     # ------------------------------------------------------------------ what a refit changed
     def episode_labels(c: sqlite3.Connection, vs: str, ep: int) -> dict[str, tuple]:

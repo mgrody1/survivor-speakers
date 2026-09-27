@@ -378,6 +378,19 @@ text: the `text` column and the copies inside audit prev_label / split originals
 to a private repo or cloud drive. `--copy-to` also copies both somewhere else (an external drive, iCloud Drive).
 Takes ~2 s. Run it at the end of every labelling session.
 
+## 7q. Music cue labelling (2026-09-27)
+
+Review mode "music cues": body lines grouped into scenes (gap > 6 s or 45 s long starts a new one, < 3 s dropped).
+Per scene, pick the kind of music (1-9, 0 = no music, which saves) and click who the scene is about (speakers and players
+named in it are offered first; the grid and `/` search add anyone). Labels go to `music_labels` (vs, ep, t0, t1, cue,
+subjects JSON of castaway ids, model_cue) and into `survspk backup` as `music_labels.csv`.
+
+The queue interleaves the model's surest dodo scenes, its least certain scenes and a fixed shuffle. The model is
+`Gamebot/data_cache/nlp/music_cues_learned.csv` when it exists (Gamebot `scripts/music_cue_model.py`, fit on these labels
+from the per-line CLAP embeddings in `data_cache/nlp/clap_emb/`), else the zero-shot `music_cues.csv`; config
+`music.cues_csv` overrides both. Lines without a label row show "?" and add no speaker chip (about half of an
+unaudited episode).
+
 ## 8. Gotchas (each cost time once)
 
 * Never open `survspk.sqlite` from the Cowork Linux VM (`~/mnt/Stargazer/...`). SQLite locks and the WAL index do not
