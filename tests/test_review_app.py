@@ -355,3 +355,43 @@ def test_music_model_guess_orders_the_queue(client, tmp_path):
         assert top["t0"] == last["t0"] and top["guess"] == "dodo" and top["model"]["dodo"] == 0.9   # goofy -> dodo
     finally:
         c._s.raw["music"].pop("cues_csv", None)
+
+
+def test_likely_errors_come_after_the_sample_and_stay_out_of_the_precision(client):
+    from survspk.calibrate import FEATURES, Calibrator, model_path
+
+    c, r = client
+    a = c.get("/api/audit/US99/2?n=50").json()
+    assert a["calibrated"] is False and all("p_right" not in g for g in a["groups"])
+    # a calibrator that only looks at duration: longer runs are likelier right
+    coef = [0.0] * len(FEATURES)
+    coef[FEATURES.index("log_dur")] = 3.0
+    Calibrator(FEATURES, [0.0] * len(FEATURES), [1.0] * len(FEATURES), coef, -6.0).save(model_path(c._s))
+    a = c.get("/api/audit/US99/2?n=50").json()
+    assert a["calibrated"] and all(0 <= g["p_right"] <= 1 for g in a["groups"])
+    sus = c.get("/api/audit/US99/2?n=50&suspects=true").json()["groups"]
+    assert sus and [g["p_right"] for g in sus] == sorted(g["p_right"] for g in sus) and sus[0]["reasons"] == ["suspect"]
+    g = sus[0]
+    res = c.post("/api/audit_verdict", json={"utt_ids": g["utt_ids"], "speaker_id": "S_C", "pred_speaker": g["pred"],
+                                             "pred_score": g["pred_score"], "sample": "suspect"}).json()
+    st = res["stats"]
+    assert st["n"] == 0 and st["precision"] is None and st["n_suspect"] == 1
+    assert st["n_suspect_wrong"] == (0 if g["pred"] == "S_C" else 1)
+    assert g["utt_ids"] not in [x["utt_ids"] for x in c.get("/api/audit/US99/2?n=50").json()["groups"]]
+    assert len(c.get("/api/audit/US99/2?n=1&suspects=true").json()["groups"]) == 0      # a check of 1 is done
+
+
+def test_queue_offers_the_calibrators_suggestion(client):
+    from survspk.calibrate import FEATURES, Calibrator, model_path
+
+    c, r = client
+    q = c.get("/api/queue/US99/2").json()
+    assert all("suggest" not in g for g in q["groups"])
+    n = len(FEATURES)
+    Calibrator(FEATURES, [0.0] * n, [1.0] * n, [0.0] * n, 2.0).save(model_path(c._s))      # p = 0.88 for all
+    q = c.get("/api/queue/US99/2").json()
+    und = [g for g in q["groups"] if g["audio_top"] and set(g["reasons"]) & {"low_margin", "no_candidate", "name_mentioned"}]
+    assert und and all(g["suggest"]["speaker_id"] == g["audio_top"][0][0] and abs(g["suggest"]["p"] - 0.881) < 0.01 for g in und)
+    Calibrator(FEATURES, [0.0] * n, [1.0] * n, [0.0] * n, -2.0).save(model_path(c._s))     # p = 0.12: no suggestion
+    q = c.get("/api/queue/US99/2").json()
+    assert all("suggest" not in g for g in q["groups"])

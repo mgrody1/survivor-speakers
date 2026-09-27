@@ -23,6 +23,7 @@ M2/M3 (bank + assign):
   survspk review                         review UI (FastAPI) at http://127.0.0.1:8765
 
 Corpus / fine-tuning:
+  survspk calibrate [--write]            fit the auto-label calibrator (review app: audit -> "check likely errors")
   survspk export-corpus corpus/          rttm + uem + database.yml + spk manifest/trials from every labelled episode
   survspk finetune-ecapa corpus/ models/ecapa-survivor   fine-tune the embedding model; prints baseline EER first
   uv run python scripts/finetune_pyannote_seg.py --corpus corpus/ --out models/seg-survivor
@@ -86,7 +87,8 @@ def info() -> None:
 
 @app.command("refresh-survivor")
 def refresh_survivor(snapshot_only: bool = typer.Option(False, help="Copy from the Gamebot snapshot only; no download"),
-                     force: bool = typer.Option(False, help="Re-download cached .rda files")) -> None:
+                     force: bool = typer.Option(True, "--force/--cached",
+                                                help="Re-download the .rda files (default); --cached reuses the last download")) -> None:
     """Pull survivoR tables (castaways, castaway_details, boot_mapping, episodes, confessionals)."""
     from .refresh_survivor import coverage_summary, refresh
 
@@ -197,6 +199,7 @@ def chyron(version_season: str, episode: int,
     r = _resolver(s)
     if r is None:
         raise typer.BadParameter("survivoR snapshot missing: run refresh-survivor first")
+    _require_cast(r, version_season, episode)
     cfg = ChyronCfg.from_settings(s)
     if backend:
         cfg.backend = backend
@@ -278,6 +281,14 @@ def _resolver(s):
     return Resolver(s) if s.survivor_db_path.exists() else None
 
 
+def _require_cast(r, version_season: str, episode: int) -> None:
+    """Stop early when survivoR has no cast for the episode yet: caption names would stay unresolved and name cards
+    would match no one (US51 E01, Sep 2026: the cached .rda files predated the season)."""
+    if r is not None and not r.present(version_season, episode):
+        raise typer.BadParameter(f"survivoR has no cast for {version_season} E{episode:02d} in survivor.sqlite: "
+                                 f"run `survspk refresh-survivor` (it re-downloads), then re-run this")
+
+
 @app.command()
 def extract(version_season: str, episode: int, force: bool = False) -> None:
     """ffmpeg: raw 16 kHz mono FLAC (+ front-center channel for 5.1 sources)."""
@@ -349,7 +360,9 @@ def segment(version_season: str, episode: int,
 
     s = load_settings()
     con = dbm.init_db(s.db_path, s.sqlite_journal)
-    rprint(segment_episode(s, con, version_season, episode, resolver=_resolver(s), allow_relabel=force))
+    r = _resolver(s)
+    _require_cast(r, version_season, episode)
+    rprint(segment_episode(s, con, version_season, episode, resolver=r, allow_relabel=force))
 
 
 @app.command()
@@ -693,6 +706,71 @@ def run_errors_cmd(version_season: str, episode: int,
 
 
 @app.command()
+def revisit(version_season: str,
+            episodes: Optional[str] = typer.Option(None, help="e.g. 1,2,3 (default: every episode with embeddings)")) -> None:
+    """Second pass once more of the season is labelled: re-score each episode with a bank fit from every *other*
+    episode (replay of 8 seasons: E2-3 auto-label 70.7% of speech vs 65.4% on the first pass, same ~94% precision;
+    E1 gets a bank that never saw it). Person and name-card labels are kept; auto labels and the open queue are redone."""
+    from .replay import revisit_bank
+    from .stage_assign import assign_episode
+
+    s = load_settings(version_season)
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    r = _resolver(s)
+    all_eps = [x[0] for x in con.execute("SELECT DISTINCT episode FROM utterances WHERE version_season=? ORDER BY 1", (version_season,))]
+    eps = [int(e) for e in episodes.split(",")] if episodes else all_eps
+    cache: dict = {}
+    for ep in eps:
+        bank = revisit_bank(s, con, r, version_season, ep, cache=cache)
+        if not bank:
+            rprint(f"[yellow]{version_season} E{ep:02d}: no other episode has labels yet; skipped[/yellow]")
+            continue
+        before = con.execute("""SELECT COALESCE(SUM(u.end_s - u.start_s), 0) FROM labels l JOIN utterances u USING (utt_id)
+                                WHERE u.version_season=? AND u.episode=? AND l.source='auto'""", (version_season, ep)).fetchone()[0]
+        df, st = assign_episode(s, con, version_season, ep, resolver=r, write=True, bank_override=bank)
+        after = con.execute("""SELECT COALESCE(SUM(u.end_s - u.start_s), 0) FROM labels l JOIN utterances u USING (utt_id)
+                               WHERE u.version_season=? AND u.episode=? AND l.source='auto'""", (version_season, ep)).fetchone()[0]
+        rprint(f"{version_season} E{ep:02d}: auto-labelled speech {before / 60:.1f} -> {after / 60:.1f} min; "
+               f"caption agreement on confident runs {st.get('sdh_agreement_confident')}")
+
+
+@app.command()
+def calibrate(write: bool = typer.Option(False, "--write", help="save work_root/models/calibrator.json (the review app's "
+                                                               "'likely errors' check uses it)"),
+              l2: float = typer.Option(1.0, help="L2 penalty")) -> None:
+    """Fit the auto-label calibrator (chance a run's top voice match is right) and check it one season out at a time."""
+    from . import calibrate as cal
+
+    r = cal.run(load_settings(), write=write, l2=l2, log=lambda m: None)
+    rprint(f"replayed {r['n_runs']} runs in {', '.join(r['seasons'])}; speaker known for {r['n_known']} ({r['right']:.0%} top match right)")
+    rprint(f"ranking (AUC): top score {r['auc_top1']:.3f} -> calibrator {r['auc_cal']:.3f}")
+    if "accepted" in r:
+        a = r["accepted"]
+        rprint(f"runs the rule accepts: {a['n']}, {a['wrong']} wrong; AUC {a['auc_top1']:.3f} -> {a['auc_cal']:.3f}; "
+               f"the calibrator's bottom 10% holds {a['bottom10_wrong']} of the wrong ones")
+    if "pooled" in r:
+        p = r["pooled"]
+        rprint(f"speech accepted at the rule's precision: rule {p['rule_cov']:.1%} at {p['rule_prec']:.1%}, "
+               f"calibrator {p['cal_cov']:.1%} at {p['cal_prec']:.1%}")
+    for p in r["per_season"]:
+        rprint(f"  {p['vs']}: {p['runs']:5d} runs  rule {p['rule_cov']:.0%} at {p['rule_prec']:.1%}  calibrator {p['cal_cov']:.0%} at "
+               f"{p['cal_prec']:.1%}  AUC {p['auc_top1']:.3f} -> {p['auc_cal']:.3f}")
+    if "queued" in r:
+        q = r["queued"]
+        rprint(f"queued runs: {q['n']}, top match right {q['right']:.0%}; AUC {q['auc_top1']:.3f} -> {q['auc_cal']:.3f}")
+        for lo, n, pm, ym in q["reliability"]:
+            rprint(f"  p >= {lo:.2f}: {n:5d} runs, predicted {pm:.2f}, right {ym:.2f}")
+    if r.get("audit"):
+        a = r["audit"]
+        rprint(f"audit groups ('likely errors' ranker): {a['n']}, {a['wrong']} wrong; AUC top score {a['auc_top1']:.3f} -> "
+               f"{a['auc']:.3f}; its bottom 10% holds {a['bottom10_wrong']}, its bottom 20% {a['bottom20_wrong']}")
+    rprint(f"cut-off matching the rule's precision: p >= {r['model']['threshold']}")
+    if r.get("written"):
+        rprint(f"written: {r['written']}")
+        rprint(f"auto labels given their chance of being right (labels.p_right): {r.get('scored_labels', 0)}")
+
+
+@app.command()
 def backup(keep: int = typer.Option(5, help="how many dated snapshots to keep in db/backups"),
            export: bool = typer.Option(True, "--export/--no-export", help="also write the text-free export of your labels"),
            copy_to: Optional[Path] = typer.Option(None, "--copy-to", help="also copy the snapshot and the export here "
@@ -752,6 +830,7 @@ def run(version_season: str, episode: int,
     if do("align"):
         align_episode(s, con, vs, ep, force=f("align"))
     if do("segment"):
+        _require_cast(_resolver(s), vs, ep)
         segment_episode(s, con, vs, ep, resolver=_resolver(s), allow_relabel=force)
     if do("embed"):
         enc = _load_encoder(model or s.embed.model, s.embed.device, s.embed.batch_size)

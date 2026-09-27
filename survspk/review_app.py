@@ -67,6 +67,7 @@ class VerdictIn(BaseModel):
     speaker_id: str                 # the human's answer; == pred_speaker means confirm
     pred_speaker: str
     pred_score: float | None = None
+    sample: str | None = None       # random (the precision sample) | suspect (the calibrator's likeliest errors)
 
 
 class CardCheckIn(BaseModel):
@@ -343,6 +344,15 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
         items = [{"utt_id": r["utt_id"], "reason": r["reason"], "payload": json.loads(r["payload"] or "{}"),
                   "resolved": bool(r["resolved"])} for r in q]
         data = build_groups(c, vs, ep, items)
+        # the calibrator's chance that the top voice match is right; offered as a one-key suggestion from 50%
+        names, _ = names_for(vs, ep)
+        undecided = [g for g in data["groups"] if g["audio_top"] and set(g["reasons"]) & {"low_margin", "no_candidate", "name_mentioned"}]
+        for g, p in zip(undecided, calibrated(c, vs, ep, [(g["utt_ids"], [t[:2] for t in g["audio_top"]], g["domain"]) for g in undecided])):
+            if p is not None:
+                sid = g["audio_top"][0][0]
+                g["p_right"] = p
+                if p >= 0.5:
+                    g["suggest"] = {"speaker_id": sid, "name": names.get(sid, sid), "p": p}
         # order: conflicts and mention flags first (cheap, high value), then longest first
         prio = {"sdh_conflict": 0, "chyron_conflict": 0, "name_mentioned": 1, "two_voices": 1, "low_margin": 2, "no_candidate": 3}
         data["groups"].sort(key=lambda g: (min(prio.get(r, 9) for r in g["reasons"]), -g["dur"]))
@@ -354,8 +364,11 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
     # already knows well. A random sample of auto-labelled runs, judged by ear, is the unbiased number.
     def audit_stats_for(c: sqlite3.Connection, vs: str, ep: int) -> dict:
         names, _ = names_for(vs, ep)
-        rows = c.execute("""SELECT group_key, pred_speaker, verdict, speaker_id, MIN(pred_score) AS score
-                            FROM audit_verdicts WHERE version_season=? AND episode=? GROUP BY group_key""", (vs, ep)).fetchall()
+        allrows = c.execute("""SELECT group_key, pred_speaker, verdict, speaker_id, MIN(pred_score) AS score,
+                                      COALESCE(MAX(sample), 'random') AS sample
+                               FROM audit_verdicts WHERE version_season=? AND episode=? GROUP BY group_key""", (vs, ep)).fetchall()
+        rows = [r for r in allrows if r["sample"] == "random"]      # the precision is the random sample's alone
+        sus = [r for r in allrows if r["sample"] == "suspect"]
         n = len(rows)
         ok = sum(r["verdict"] == "confirm" for r in rows)
         per: dict[str, dict] = {}
@@ -367,16 +380,44 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
             else:
                 d["rejected_as"][names.get(r["speaker_id"], r["speaker_id"])] = d["rejected_as"].get(names.get(r["speaker_id"], r["speaker_id"]), 0) + 1
         return {"n": n, "n_confirmed": ok, "precision": round(ok / n, 3) if n else None,
-                "wilson_low": round(_wilson_low(ok, n), 3) if n else None, "per_speaker": per}
+                "wilson_low": round(_wilson_low(ok, n), 3) if n else None, "per_speaker": per,
+                "n_suspect": len(sus), "n_suspect_wrong": sum(r["verdict"] == "reject" for r in sus)}
+
+    def calibrator():
+        from .calibrate import load_model
+
+        p = Path(s.paths.work_root) / "models/calibrator.json"
+        key = p.stat().st_mtime if p.exists() else None
+        if "cal" not in state or state.get("cal_key") != key:
+            state["cal"], state["cal_key"] = (load_model(s) if key else None), key
+        return state["cal"]
+
+    def calibrated(c: sqlite3.Connection, vs: str, ep: int, groups: list[tuple], audit: bool = False) -> list:
+        """p_right for [(utt_ids, top, domain)] with the saved calibrator (None without one); `audit`: the audit
+        ranker's chance instead, for groups audit mode shows (falls back to p_right without a ranker)."""
+        cal = calibrator()
+        if cal is None or not groups:
+            return [None] * len(groups)
+        from .calibrate import EpisodeContext, bank_support, group_features
+
+        bank, r_, ctx = bank_support(c, vs, ep), resolver(), EpisodeContext(c, vs, ep)
+        out = []
+        for uids, top, dom in groups:
+            f = group_features(c, r_, vs, ep, uids, top, dom, bank, ctx)
+            p = (cal.audit_prob(f) if audit and cal.audit else cal.prob(f)) if f else None
+            out.append(round(p, 3) if p is not None else None)
+        return out
 
     @app.get("/api/audit/{vs}/{ep}")
-    def audit(vs: str, ep: int, n: int = AUDIT_SAMPLE):
+    def audit(vs: str, ep: int, n: int = AUDIT_SAMPLE, suspects: bool = False):
         """A stable random sample of auto-labelled body runs, spread across predicted speakers, minus the groups
         already judged; `n` is the sample size per episode, so once `n` verdicts exist the sample is empty (it used
         to refill to `n` open groups after every verdict, so the audit never ended). Same group shape as the queue;
-        `pred` / `pred_score` carry the auto label."""
+        `pred` / `pred_score` carry the auto label; `p_right` is the calibrator's chance that it is right (`survspk
+        calibrate --write`). With `suspects`, the `n` groups it rates least likely to be right instead, judged apart
+        from the random sample (they would bias the precision) and after it."""
         c = con()
-        rows = c.execute("""SELECT l.utt_id, l.speaker_id, l.confidence, l.top_candidates, l.run_id FROM labels l
+        rows = c.execute("""SELECT l.utt_id, l.speaker_id, l.confidence, l.top_candidates, l.run_id, l.domain FROM labels l
                             JOIN utterances u USING (utt_id)
                             WHERE u.version_season=? AND u.episode=? AND u.segment='body' AND l.source='auto'""", (vs, ep)).fetchall()
         judged = {r[0] for r in c.execute("SELECT utt_id FROM audit_verdicts WHERE version_season=? AND episode=?", (vs, ep))}
@@ -391,7 +432,8 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
             if not top or not isinstance(top[0], list):
                 top = [[r["speaker_id"], r["confidence"] or 0.0]]
             items.append({"utt_id": r["utt_id"], "reason": "audit", "resolved": False,
-                          "payload": {"top": top, "pred": r["speaker_id"], "score": r["confidence"], "run_id": r["run_id"]}})
+                          "payload": {"top": top, "pred": r["speaker_id"], "score": r["confidence"], "run_id": r["run_id"],
+                                      "domain": r["domain"]}})
         data = build_groups(c, vs, ep, items)
         groups = data["groups"]
         # any group with a judged utterance is out (a partial verdict counts as judged)
@@ -400,6 +442,13 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
             pl = next(it["payload"] for it in items if it["utt_id"] == g["utt_ids"][0])
             g["pred"], g["pred_score"] = pl["pred"], pl["score"]
             g["reasons"] = ["audit"]
+        cal = calibrator()
+        if cal is not None:
+            first = {it["utt_id"]: it["payload"] for it in items}
+            ps = calibrated(c, vs, ep, [(g["utt_ids"], first[g["utt_ids"][0]]["top"], first[g["utt_ids"][0]].get("domain")) for g in groups],
+                            audit=True)
+            for g, p in zip(groups, ps):
+                g["p_right"] = p
         # stratified, deterministic: shuffle within each predicted speaker by a hash of the group, then round-robin
         import hashlib
         key = lambda g: hashlib.sha1(f"{vs}|{ep}|{g['utt_ids'][0]}".encode()).hexdigest()  # noqa: E731
@@ -408,6 +457,14 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
             by_spk.setdefault(g["pred"], []).append(g)
         picked: list[dict] = []
         stats = audit_stats_for(c, vs, ep)
+        if suspects:
+            ranked = sorted((g for g in groups if g.get("p_right") is not None), key=lambda g: g["p_right"])
+            for g in ranked:
+                g["reasons"] = ["suspect"]
+            data["groups"] = ranked[:max(0, n - stats["n_suspect"])]
+            data["n_open"], data["n_pool"], data["stats"] = len(data["groups"]), len(groups), stats
+            data["calibrated"] = cal is not None
+            return data
         n = max(0, n - stats["n"])                       # what is left of this episode's sample
         spks = sorted(by_spk, key=lambda s_: hashlib.sha1(f"{vs}|{ep}|{s_}".encode()).hexdigest())
         while len(picked) < n and any(by_spk.values()):
@@ -418,6 +475,7 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
         data["n_open"] = len(picked)
         data["n_pool"] = len(groups)
         data["stats"] = stats
+        data["calibrated"] = cal is not None
         return data
 
     @app.post("/api/audit_verdict")
@@ -437,9 +495,11 @@ def create_app(settings: Settings | None = None, resolver_obj=None) -> FastAPI:
                 continue
             run_id = json.loads(u["flags"] or "{}").get("run_id")
             c.execute("""INSERT OR REPLACE INTO audit_verdicts (utt_id, version_season, episode, run_id, group_key, pred_speaker,
-                         pred_score, verdict, speaker_id, prev_label, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
+                         pred_score, verdict, speaker_id, prev_label, created_at, sample)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'),?)""",
                       (uid, u["version_season"], u["episode"], run_id, first, inp.pred_speaker, inp.pred_score, verdict,
-                       inp.speaker_id, json.dumps(prev.get(uid)) if prev.get(uid) else None))
+                       inp.speaker_id, json.dumps(prev.get(uid)) if prev.get(uid) else None,
+                       "suspect" if inp.sample == "suspect" else "random"))
         c.commit()
         vs, ep = c.execute("SELECT version_season, episode FROM utterances WHERE utt_id=?", (first,)).fetchone()
         return {"ok": True, "verdict": verdict, "stats": audit_stats_for(c, vs, ep)}

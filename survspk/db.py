@@ -247,6 +247,9 @@ CREATE TABLE IF NOT EXISTS card_checks (
 
 # Columns added after the first release; applied by migrate() so existing databases keep working.
 MIGRATIONS: dict[str, dict[str, str]] = {
+    "audit_verdicts": {
+        "sample": "TEXT",                  # random (the precision sample; NULL on old rows) | suspect (likely errors)
+    },
     "episodes": {
         "audio_vocals_center_path": "TEXT",
         "audio_variants": "TEXT",          # json {variant: path}
@@ -274,6 +277,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
     },
     "labels": {
         "run_id": "INTEGER",               # run the utterance was scored in (assign pools runs)
+        "p_right": "REAL",                 # calibrator: chance the auto label is right (survspk calibrate)
         "margin": "REAL",
         # where the label sits in the episode, so it can be re-anchored after a re-segment (utt ids are positional)
         "version_season": "TEXT",

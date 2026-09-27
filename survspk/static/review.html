@@ -300,6 +300,7 @@ let data = null, groups = [], i = 0, sel = new Set(), history = [], preload = {}
 let vs = null, ep = null, anchor = null, nextSel = null, pendingB = null, splitting = false;
 let focusId = null, stale = false, markRefit = null, loadToken = 0;
 const mode = () => $('#mode').value;
+let suspects = false;      // audit mode, after the random sample: the calibrator's likeliest errors
 const AUDIT_SAMPLE = 20;
 const store = { get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
                 set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
@@ -341,7 +342,7 @@ async function loadEpisodes() {
   $('#cardhelp').style.display = cardsMode ? '' : 'none';
   const saved = localStorage.getItem('survspk.ep');
   if (saved && [...sel.options].some(o => o.value === saved)) sel.value = saved;
-  sel.onchange = () => { localStorage.setItem('survspk.ep', sel.value); focusId = null; loadQueue(); };
+  sel.onchange = () => { localStorage.setItem('survspk.ep', sel.value); focusId = null; suspects = false; loadQueue(); };
   if (shown.length) await loadQueue();
   else {
     $('#item').innerHTML = cardsMode
@@ -357,7 +358,7 @@ async function loadQueue() {
   loadHistory();
   if (mode() === 'cards') return loadCards(token);
   if (mode() === 'music') return loadMusic(token);
-  data = await api(mode() === 'audit' ? `/api/audit/${vs}/${ep}` : `/api/queue/${vs}/${ep}`);
+  data = await api(mode() === 'audit' ? `/api/audit/${vs}/${ep}` + (suspects ? '?suspects=true' : '') : `/api/queue/${vs}/${ep}`);
   window._cov = await api(`/api/coverage/${vs}/${ep}`);
   if (token !== loadToken) return;                          // a newer load started while this one waited
   if (markRefit && markRefit.vs === vs && markRefit.ep === ep) {   // just refitted: remember how many of your labels it saw
@@ -474,18 +475,24 @@ function selRange() {
 function show() {
   const left = groups.slice(i), nLines = left.reduce((n, g) => n + g.utt_ids.length, 0);
   $('#paneltitle').textContent = 'label as';
-  $('#count').textContent = mode() === 'audit' ? `${left.length} left in the sample`
+  $('#count').textContent = mode() === 'audit' ? (suspects ? `${left.length} likely errors left` : `${left.length} left in the sample`)
     : `${left.length} group${left.length === 1 ? '' : 's'} · ${nLines} line${nLines === 1 ? '' : 's'}`;
   const box = $('#item');
   splitting = false;
   if (i >= groups.length) {
     const eps = Array.from({length: ep}, (_, k) => k + 1).join(',');
     box.innerHTML = mode() === 'audit'
-      ? '<div class="done">audit sample done for this episode<br><small>the precision in the header is the number to record; switch to <b>queue</b> or go to the next episode</small></div>'
+      ? (suspects
+        ? '<div class="done">likely errors checked for this episode<br><small>switch to <b>queue</b> or go to the next episode</small></div>'
+        : '<div class="done">audit sample done for this episode<br><small>the precision in the header is the number to record</small>' +
+          (data.calibrated ? '<br><button class="primary" id="bn-suspects">check the likeliest errors</button><br><small>the auto labels the calibrator rates least likely to be right (about a third of the wrong ones are in its bottom tenth); kept apart from the precision</small>' : '<br><small>switch to <b>queue</b> or go to the next episode</small>') +
+          '</div>')
       : focusId
         ? `<div class="done">no more clips that could be ${shortName(focusId)}<br><small>use <b>show the whole queue</b> above</small></div>`
         : `<div class="done">queue empty for this episode 🎉<br><small>next: <b>refit &amp; reassign</b>, or in Terminal <kbd>uv run survspk bank ${vs} --episodes ${eps}</kbd> then assign the next episode</small></div>`;
-    $('#cands').innerHTML = ''; $('#selbar').innerHTML = ''; return;
+    $('#cands').innerHTML = ''; $('#selbar').innerHTML = '';
+    const bs = $('#bn-suspects'); if (bs) bs.onclick = () => { suspects = true; loadQueue(); };
+    return;
   }
   const g = groups[i];
   sel = new Set(g.utt_ids); anchor = null;
@@ -498,7 +505,8 @@ function show() {
   const ctx = rows => rows.map(r => `<div class="ctx">${r.mmss} <b>${r.speaker || '?'}</b> ${r.text}</div>`).join('');
   box.innerHTML = `
     <div class="meta"><span>${g.mmss}</span><span>${g.dur}s</span><span title="the clip the player requests, in audio seconds">clip ${(+g.start_s).toFixed(1)}–${(+g.end_s).toFixed(1)}</span><span>${g.domain}</span><span>${g.segment}</span>${reasons}${could}<span>${i+1}/${groups.length}</span></div>
-    ${g.pred ? `<div class="autolab">assign said <b>${(g.audio_top[0] || [])[2] || g.pred}</b>${g.pred_score != null ? ` at ${(+g.pred_score).toFixed(2)}` : ''} — <kbd>y</kbd> if that is the voice, otherwise pick who it is</div>` : ''}
+    ${g.pred ? `<div class="autolab">assign said <b>${(g.audio_top[0] || [])[2] || g.pred}</b>${g.pred_score != null ? ` at ${(+g.pred_score).toFixed(2)}` : ''}${g.p_right != null ? ` (calibrator: ${Math.round(100 * g.p_right)}% likely right)` : ''} — <kbd>y</kbd> if that is the voice, otherwise pick who it is</div>` : ''}
+    ${!g.pred && g.suggest ? `<div class="autolab">probably <b>${g.suggest.name}</b> (${Math.round(100 * g.suggest.p)}% by the calibrator) — <kbd>y</kbd> to accept, otherwise pick who it is</div>` : ''}
     ${ctx(g.before)}
     <audio id="player" controls ${$('#autoplay').checked ? 'autoplay' : ''} src="${clipUrl(g)}"></audio>
     <div class="frames" id="frames"></div>
@@ -729,7 +737,8 @@ async function label(speaker_id) {
   const g = groups[i];
   const ids = g.utt_ids.filter(u => sel.has(u));
   if (g.pred) {
-    const r = await api('/api/audit_verdict', {utt_ids: ids, speaker_id, pred_speaker: g.pred, pred_score: g.pred_score});
+    const r = await api('/api/audit_verdict', {utt_ids: ids, speaker_id, pred_speaker: g.pred, pred_score: g.pred_score,
+                                               sample: suspects ? 'suspect' : 'random'});
     paintAudit(r.stats);
   } else await api('/api/label', {utt_ids: ids, speaker_id});
   stopVoice(); notePace(ids.length);
@@ -748,7 +757,8 @@ async function label(speaker_id) {
 function paintAudit(st) {
   const el = $('#auditstat');
   if (mode() !== 'audit' || !st) { el.textContent = ''; return; }
-  el.textContent = st.n ? `audit: ${st.n_confirmed}/${st.n} confirmed · precision ${Math.round(100 * st.precision)}% (≥ ${Math.round(100 * st.wilson_low)}% at 95%)` : 'audit: no verdicts yet';
+  el.textContent = (st.n ? `audit: ${st.n_confirmed}/${st.n} confirmed · precision ${Math.round(100 * st.precision)}% (≥ ${Math.round(100 * st.wilson_low)}% at 95%)` : 'audit: no verdicts yet') +
+    (st.n_suspect ? ` · likely errors: ${st.n_suspect_wrong}/${st.n_suspect} were wrong` : '');
 }
 function focusOn(uttId) { const k = groups.findIndex(g => g.utt_ids.includes(uttId)); if (k >= 0 && k !== i) { i = k; show(); } }
 
@@ -968,7 +978,7 @@ document.addEventListener('keydown', async e => {
   if (e.key === 'ArrowRight' || e.key === 'n') { if (i < groups.length - 1) { i++; show(); } return; }
   if (e.key === 'ArrowLeft') { if (i > 0) { i--; show(); } return; }
   if (e.key === 'z') { undo(); return; }
-  if (e.key === 'y') { const g = groups[i]; if (g && g.pred) label(g.pred); else toast('y confirms an auto label (audit mode)'); return; }
+  if (e.key === 'y') { const g = groups[i]; if (g && g.pred) label(g.pred); else if (g && g.suggest) label(g.suggest.speaker_id); else toast('y confirms an auto label (audit) or the suggestion (queue)'); return; }
   if (e.key === 'o') return label('OTHER');
   if (e.key === 'u') return label('UNKNOWN');
   if (e.key === 'x') return label('NOSPEECH');
@@ -978,7 +988,7 @@ document.addEventListener('keydown', async e => {
 $('#search').addEventListener('input', renderGrid);
 $('#vocals').addEventListener('change', () => { preload = {}; if (mode() === 'cards') showCard(); else show(); });
 $('#sort').addEventListener('change', () => { focusId = null; loadQueue(); });
-$('#mode').addEventListener('change', () => { localStorage.setItem('survspk.mode', mode()); if (mode() !== 'queue') focusId = null; loadEpisodes(); });
+$('#mode').addEventListener('change', () => { suspects = false; localStorage.setItem('survspk.mode', mode()); if (mode() !== 'queue') focusId = null; loadEpisodes(); });
 $('#autoplay').checked = store.get('survspk.autoplay', true);
 $('#showframes').checked = store.get('survspk.frames', true);
 $('#showframes').addEventListener('change', () => { store.set('survspk.frames', $('#showframes').checked); const b = $('#frames'); if (b) b.dataset.want = ''; if (groups[i]) paintFrames(...selRange()); });

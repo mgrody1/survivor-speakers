@@ -110,6 +110,7 @@ thresholds:                    # assign (spec §7.7.5), on cosine to the bank
   bank_min_confidence: 0.60
   purity_min_s: 1.0            # utterances shorter than this do not vote when a run is checked for a speaker change
   auto_min_s: 2.0              # a group with less speech than this gets no auto label (audits: most misses were sub-2 s)
+  calibrated_accept: true      # once `survspk calibrate --write` has saved a model, it decides auto vs review at the rule's precision (+2 points of speech auto-labelled in the 8-season replay); false: the accept/margin rule
   voice_split: true            # cut out lines whose own voice clearly prefers another speaker (two people in one run)
   voice_split_margin: 0.08     # ... by at least this much over the group's speaker
   voice_split_confident: false # false: the line need not be confident on its own (US45/US47 test: +2-3 points of precision)

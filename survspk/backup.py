@@ -89,7 +89,8 @@ def _write(path: Path, cols: list[str], rows) -> int:
         w = csv.writer(f)
         w.writerow(cols)
         for r in rows:
-            w.writerow([r[c] for c in cols])
+            keys = set(r.keys())
+            w.writerow([r[c] if c in keys else None for c in cols])      # a column newer than this database: blank
             n += 1
     return n
 
@@ -124,7 +125,7 @@ def export_labels(con: sqlite3.Connection, out_dir: Path) -> dict:
             for r in q("SELECT * FROM audit_verdicts ORDER BY version_season, episode, utt_id")]
     counts["audit_verdicts.csv"] = _write(out_dir / "audit_verdicts.csv",
                                           ["utt_id", "version_season", "episode", "run_id", "group_key", "pred_speaker",
-                                           "pred_score", "verdict", "speaker_id", "prev_label", "created_at"], rows)
+                                           "pred_score", "verdict", "speaker_id", "prev_label", "created_at", "sample"], rows)
     rows = []
     for r in q("SELECT * FROM utt_splits ORDER BY base_utt_id"):
         orig = _json(r["original"]) or {}

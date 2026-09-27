@@ -278,6 +278,47 @@ class RunResult:
     extra: dict = field(default_factory=dict)
 
 
+def _apply_calibrator(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, results: list[RunResult],
+                      bank: dict, utts: pd.DataFrame, resolver, th: Thresholds) -> None:
+    """With a calibrator (`survspk calibrate --write`), give every scored run its chance of being right
+    (`extra["p_right"]`, stored on auto labels). With thresholds.calibrated_accept, that chance also makes the call
+    between auto and low_margin (p >= the cut-off fit to the rule's precision), in place of the accept/margin rule;
+    the floor, the mention rule and the minimum length still apply."""
+    from .calibrate import EpisodeContext, features, load_model
+
+    cal = load_model(settings)
+    if cal is None:
+        return
+    use = bool(settings.raw.get("thresholds", {}).get("calibrated_accept", False)) and cal.threshold is not None
+    host_id = settings.franchise_for(vs).host_id
+    ctx = EpisodeContext(con, vs, ep)
+    U = utts.set_index("utt_id")
+
+    def sup(spk, dom):
+        if not spk:
+            return None
+        e = bank.get((spk, dom)) or bank.get((spk, "confessional")) or bank.get((spk, "field"))
+        return (e.n_utts, e.total_dur_s) if e is not None else None
+
+    for r in results:
+        sc = r.scored
+        if not sc.top or not sc.pred:
+            continue
+        top = [[s_, float(x)] for s_, x in sc.top]
+        second = top[1][0] if len(top) > 1 else None
+        g = U.loc[[u for u in r.utt_ids if u in U.index]]
+        text = " ".join(t or "" for t in g.text)
+        men = bool(resolver is not None and resolver.mentions(text, sc.pred, vs))
+        cf = ctx.features(r.utt_ids, r.start_s, r.start_s + r.dur, sc.pred, second)
+        f = features(top, float(g.dur.sum()), len(g), r.domain, r.segment, men, sup(sc.pred, r.domain), sup(second, r.domain),
+                     ep, host_id, ctx=cf)
+        p = cal.prob(f)
+        r.extra["p_right"] = round(p, 4)
+        if use and sc.decision in ("auto", "low_margin") and sc.score >= th.floor:
+            ok = p >= cal.threshold and not men and float(g.dur.sum()) >= th.auto_min_s
+            sc.decision = "auto" if ok else "low_margin"
+
+
 def rolling_episodes(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, variant: str,
                      model: str | None = None) -> list[int]:
     """Episodes before `ep` with lines and embeddings: what a rolling bank for `ep` learns from."""
@@ -289,22 +330,27 @@ def rolling_episodes(settings: Settings, con: sqlite3.Connection, vs: str, ep: i
 
 def assign_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int, variant: str | None = None,
                    model: str | None = None, bank_as_of: int | None = None, resolver=None,
-                   write: bool = True, rolling: bool | None = None) -> tuple[pd.DataFrame, dict]:
+                   write: bool = True, rolling: bool | None = None,
+                   bank_override: dict | None = None) -> tuple[pd.DataFrame, dict]:
     """Label an episode's runs from the bank. With `rolling` (default: config bank.rolling, on unless a bank_as_of is
     given), the bank is first refit from every earlier episode's trusted labels, so a season's later episodes learn
-    from the caption names, name cards and human checks of the episodes before them."""
+    from the caption names, name cards and human checks of the episodes before them. `bank_override`: score with this
+    bank instead (the revisit pass, from every other episode of the season)."""
     t0 = time.time()
     variant = variant or settings.audio.variant
     th = Thresholds.from_settings(settings)
     if rolling is None:
-        rolling = bank_as_of is None and bool(settings.raw.get("bank", {}).get("rolling", True))
+        rolling = bank_as_of is None and bank_override is None and bool(settings.raw.get("bank", {}).get("rolling", True))
     rolled = None
     if rolling:
         prev = rolling_episodes(settings, con, vs, ep, variant, model)
         if prev:
             from .stage_bank import build_bank
             rolled = build_bank(settings, con, vs, prev, variant=variant, model=model, as_of=ep - 1, resolver=resolver)
-    bank, used = load_bank(con, vs, bank_as_of if bank_as_of is not None else ep - 1)
+    if bank_override is not None:
+        bank, used = bank_override, -1                    # fit without this episode: scores are blind to its labels
+    else:
+        bank, used = load_bank(con, vs, bank_as_of if bank_as_of is not None else ep - 1)
     if not bank:
         raise LookupError(f"no speaker bank for {vs} (as of <= {bank_as_of if bank_as_of is not None else ep - 1}); "
                           f"run `survspk bank {vs} --episodes ...` first")
@@ -362,6 +408,8 @@ def assign_episode(settings: Settings, con: sqlite3.Connection, vs: str, ep: int
                 extra={"n_utts": int(len(gg)), "n_vec": len(vv), "mixed_explicit": len(expl) > 1}))
 
     n_text = _apply_text_prior(settings, con, vs, ep, results)
+    if used is not None and used < ep:       # a bank fit on this very episode (E01) makes every score rosy: rule only
+        _apply_calibrator(settings, con, vs, ep, results, bank, utts, resolver, th)
 
     df = pd.DataFrame([{
         "run_id": r.run_id, "sub": r.sub, "segment": r.segment, "domain": r.domain, "start_s": round(r.start_s, 2),
@@ -455,8 +503,8 @@ def _write(con: sqlite3.Connection, vs: str, ep: int, results: list[RunResult], 
                 src = "text" if sc.decision == "auto_text" else "auto"
                 conf = r.extra.get("text_conf", sc.score) if src == "text" else sc.score
                 con.execute(f"""INSERT OR REPLACE INTO labels (utt_id, speaker_id, source, confidence, top_candidates, domain,
-                                labeled_at, run_id, margin) VALUES (?,?,?,?,?,?,{now},?,?)""",
-                            (uid, sc.pred, src, conf, top, r.domain, r.run_id, sc.margin))
+                                labeled_at, run_id, margin, p_right) VALUES (?,?,?,?,?,?,{now},?,?,?)""",
+                            (uid, sc.pred, src, conf, top, r.domain, r.run_id, sc.margin, r.extra.get("p_right")))
                 n_labels += 1
             elif sc.decision in ("low_margin", "no_candidate", "name_mentioned"):
                 con.execute("INSERT OR REPLACE INTO review_queue (utt_id, reason, payload, resolved) VALUES (?,?,?,0)",

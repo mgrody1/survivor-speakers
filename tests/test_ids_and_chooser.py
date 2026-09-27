@@ -59,3 +59,12 @@ def test_chooser_falls_back_to_embedded():
     trunc = _c("sdh_trunc.srt", is_sdh=True, n_cues=600, delta=-1300)
     e3 = _c("v.mkv#s:3", source="embedded", is_sdh=True, n_cues=1400, delta=-40)
     assert choose_subtitle([trunc, e3], True, 2600)["path"] == "v.mkv#s:3"
+
+
+def test_a_track_that_names_its_speakers_wins_within_a_timing_tier():
+    base = {"source": "sidecar", "parse_error": None, "n_cues": 2100, "duration_delta_s": 3.0}
+    downloaded = {**base, "path": "dl.en.hi.srt", "is_sdh": True, "n_names": 1}
+    embedded = {**base, "path": "v.mkv#s:3", "source": "embedded", "is_sdh": True, "n_cues": 2000, "n_names": 241}
+    assert choose_subtitle([downloaded, embedded], True, 3900)["path"] == "v.mkv#s:3"
+    bad_timing = {**embedded, "duration_delta_s": 400.0}
+    assert choose_subtitle([downloaded, bad_timing], True, 3900)["path"] == "dl.en.hi.srt"   # timing still comes first

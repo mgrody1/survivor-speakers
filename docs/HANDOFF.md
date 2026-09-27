@@ -391,6 +391,50 @@ from the per-line CLAP embeddings in `data_cache/nlp/clap_emb/`), else the zero-
 `music.cues_csv` overrides both. Lines without a label row show "?" and add no speaker chip (about half of an
 unaudited episode).
 
+## 7r. Auto-label calibrator (2026-09-27)
+
+`survspk calibrate [--write]` (`survspk/calibrate.py`, `survspk/replay.py`). A logistic regression (numpy, JSON at
+`work_root/models/calibrator.json`) for the chance that a run's top voice match is right.
+
+* **Training data: a replay.** Each season's assign is re-run in memory, episode by episode, from a bank fit on the
+  episodes before (read-only; `scripts/replay_assign.py` writes the runs to CSV for experiments). Runs whose speaker
+  is known (a person's or card's label, else an explicit caption name) are the examples: 13.1k over 8 seasons.
+* **Features:** top-3 scores, margin, run length and line count, confessional/recap, whether the run says the
+  predicted name, the bank's support for the top two, episode; and context known at assign time: explicit caption
+  names on *other* runs within 60 s (for the top two; the caption-named line just before/after is the top match),
+  name cards for the top two within 90 s.
+* **Held-out seasons (8):** AUC 0.837 (top score) -> 0.859. At the rule's precision (93.9%) it auto-labels 82.0% of
+  known speech vs 80.0% (7 of 8 seasons up). On queued runs it is calibrated (0.78 predicted -> 0.78 right; AUC 0.73
+  -> 0.79).
+* **Where it is used:**
+  - assign stores `labels.p_right` on auto labels and, with `thresholds.calibrated_accept: true` (default; only once
+    a model is saved), p >= the cut-off decides auto vs review (floor, mention rule and auto_min_s still apply).
+  - review queue: "probably X (NN%)" from 50%, `y` accepts.
+  - audit mode, after the random sample: "check the likeliest errors". The groups there are leftovers of runs, and
+    their own length matters (short leftovers are often wrong), which the run model cannot see, so a second small
+    model (the run model's log-odds, the group's length, top score, margin; fit on audit verdicts, stored as
+    `audit` in the JSON) ranks them: AUC 0.50 (top score) -> 0.76, bottom 10% holds ~30% of the wrong labels,
+    bottom 20% ~60%. Verdicts there are `audit_verdicts.sample='suspect'`, outside the precision.
+  - Gamebot `nlp_features.py`: auto labels count by p_right (own lines, words, seconds, tone, naming edges).
+* **Tried and not used:** the other audio variants as extra scores (AUC +0.006, three more banks per assign);
+  gradient boosting (AUC +0.007); self-training the bank on p >= 0.93 / 0.97 auto labels (coverage and precision
+  unchanged).
+* **Voice-split margin (replay, all 8 seasons, share of known speech):** off 70.4% right / 4.39% wrong; margin 0.04
+  70.1 / 3.43; 0.08 (current) 70.1 / 3.53; 0.12 70.2 / 3.60; 0.16 70.2 / 3.64. The split removes a fifth of the wrong
+  labels for 0.3 points of right ones, and the margin barely matters between 0.04 and 0.16: kept at 0.08.
+
+## 7s. Revisit pass (2026-09-27)
+
+`survspk revisit VS [--episodes 1,2,3]`: re-score episodes with a bank fit (in memory) from every *other* episode's
+trusted labels, nearest episodes weighted most (`fit_entry(symmetric=True)`); person and card labels kept, auto labels
+and the open queue redone; stored rolling banks untouched. Replay of 8 seasons (runs with a known speaker, share of body
+speech auto-labelled at ~94% precision): E1 62.9% at 93.5% (the premiere otherwise only has a bank fit on itself);
+E2-3 65.4% -> 70.7%; E4-6 68.7% -> 70.0%; E7+ unchanged. Run it after the season, or after E4-5 for the premiere.
+First real run (US31, US42-47, US49, E1-6): premieres lost their self-bank autos (e.g. US49 E01 34.6 -> 30.6 min),
+and captionless episodes first lost ~6 points because the calibrator read "no caption name nearby" as evidence against a
+match; fixed with `ep_has_caps` / `ep_has_cards` features (replay: captionless 62.0% -> 71.2% of speech at 97%, vs the
+rule's 68.1%). With the calibrator deciding, episodes with caption names stay about where the rolling pass left them.
+
 ## 8. Gotchas (each cost time once)
 
 * Never open `survspk.sqlite` from the Cowork Linux VM (`~/mnt/Stargazer/...`). SQLite locks and the WAL index do not

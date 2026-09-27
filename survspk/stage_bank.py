@@ -213,9 +213,12 @@ def farthest_point_sample(X: np.ndarray, k: int, seed_idx: int = 0) -> list[int]
     return chosen
 
 
-def fit_entry(g: pd.DataFrame, speaker_id: str, domain: str, as_of: int, k: int, half_life: float) -> BankEntry:
+def fit_entry(g: pd.DataFrame, speaker_id: str, domain: str, as_of: int, k: int, half_life: float,
+              symmetric: bool = False) -> BankEntry:
+    """`symmetric`: episodes after as_of age too (a bank for revisiting an episode once the season is done)."""
     X = np.stack(g.vector.to_numpy()).astype(np.float32)
-    age = (as_of - g.episode.to_numpy()).clip(min=0)
+    d = as_of - g.episode.to_numpy()
+    age = np.abs(d) if symmetric else d.clip(min=0)
     w = (0.5 ** (age / half_life)) * g.dur.to_numpy()          # recency x duration
     c = (X * w[:, None]).sum(0) / max(w.sum(), 1e-9)
     c = c / (np.linalg.norm(c) + 1e-9)
