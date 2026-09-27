@@ -127,3 +127,21 @@ def test_revisit_scores_an_episode_with_a_bank_from_the_others(season):
     df, st = assign_episode(s, con, "US99", 1, variant="vocals", resolver=R(s), write=True, bank_override=bank)
     assert len(df) and con.execute("SELECT COUNT(*) FROM speaker_bank").fetchone()[0] == n_banks     # stored banks untouched
     assert st["sdh_agreement_runs"] is not None and st["sdh_agreement_runs"] > 0.8    # scored blind, still right
+
+
+def test_queue_lines_carry_the_calibrators_chance(season):
+    import json
+
+    from survspk.stage_assign import assign_episode
+
+    s, con, sea = season
+    build_bank(s, con, "US99", [1], variant="vocals")
+    sea.episode(2, [{"spk": "S_D", "label": None, "n": 3, "dur_each": 5.0}, {"spk": "S_A", "label": None, "n": 2, "dur_each": 4.0}])
+    assign_episode(s, con, "US99", 2, variant="vocals", resolver=R(s), write=True)       # no calibrator yet
+    q = [json.loads(r[0]) for r in con.execute("SELECT payload FROM review_queue WHERE resolved=0 AND reason IN ('low_margin','no_candidate')")]
+    assert q and all(x.get("p_right") is None for x in q)
+    m = _const(1.0)
+    m.save(cal.model_path(s))
+    assert cal.score_queue(s, m, R(s)) == len(q)
+    q = [json.loads(r[0]) for r in con.execute("SELECT payload FROM review_queue WHERE resolved=0 AND reason IN ('low_margin','no_candidate')")]
+    assert all(abs(x["p_right"] - 0.731) < 0.01 and x["top"] for x in q)

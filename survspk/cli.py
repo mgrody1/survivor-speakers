@@ -5,6 +5,7 @@
   survspk inventory [--season 47 ...] [--no-probe] [--force]
   survspk ingest-subs [--season US47 ...] [--force]
   survspk names-report [--min-lines 3]
+  survspk import-names [--season US41] [--dry-run]   borrow NAME: labels from another caption release (HF)
   survspk report                                inventory + names summary to work_root/reports/
   survspk grab-frame US47 2 162.0 [--crop]      chyron frame grab
   survspk missing-subs / fetch-subs              subtitle gaps via Plex
@@ -131,6 +132,39 @@ def ingest_subs(season: Optional[list[str]] = typer.Option(None, "--season", "-s
         rprint(f"[green]ingested {len(df) - len(errs)} episodes[/green]" + (f", [red]{len(errs)} errors[/red]" if len(errs) else ""))
         if len(errs):
             _df_table(errs, "errors")
+
+
+@app.command("import-names")
+def import_names_cmd(season: Optional[list[str]] = typer.Option(None, "--season", "-s", help="version_season(s) e.g. US41"),
+                     episodes: Optional[str] = typer.Option(None, help="e.g. 2,3,8 (default: every episode whose captions lack names)"),
+                     dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be imported; write nothing"),
+                     parquet: Optional[Path] = typer.Option(None, help="Source parquet (default: downloaded to work_root/external/)")) -> None:
+    """Copy NAME: speaker labels from another release of the same captions onto our unnamed lines."""
+    from . import import_names as im
+
+    s = load_settings()
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    src = im.ensure_source(s, parquet)
+    if episodes:
+        if not season or len(season) != 1:
+            raise typer.BadParameter("--episodes needs exactly one --season")
+        todo = [(season[0], int(e)) for e in episodes.split(",") if e.strip()]
+    else:
+        todo = im.candidates(con, src, season or None)
+    if not todo:
+        rprint("nothing to import: every episode already has names, or the source has none for it")
+        return
+    cache: dict = {}
+    rows = [im.import_episode(con, src, vs, ep, write=not dry_run, cache=cache) for vs, ep in todo]
+    df = pd.DataFrame(rows)
+    _df_table(df, "import-names" + (" (dry run)" if dry_run else ""))
+    skipped = df[~df.ok]
+    if len(skipped):
+        rprint(f"[yellow]{len(skipped)} episode(s) not {'importable' if dry_run else 'imported'} (ok=False): fewer than "
+               f"{im.MIN_ANCHORS} identical lines or under {im.MIN_MATCH_SHARE:.0%} of the source's names landed, "
+               "so the two files are probably different releases or cuts[/yellow]")
+    if not dry_run and df.applied.sum():
+        rprint("next: [bold]survspk run VS EP --from segment --force[/bold] for processed episodes, then bank/assign as usual")
 
 
 @app.command("names-report")
@@ -768,6 +802,7 @@ def calibrate(write: bool = typer.Option(False, "--write", help="save work_root/
     if r.get("written"):
         rprint(f"written: {r['written']}")
         rprint(f"auto labels given their chance of being right (labels.p_right): {r.get('scored_labels', 0)}")
+        rprint(f"open queue lines given the same for their top match (payload p_right): {r.get('scored_queue', 0)}")
 
 
 @app.command()

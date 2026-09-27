@@ -509,7 +509,7 @@ def _write(con: sqlite3.Connection, vs: str, ep: int, results: list[RunResult], 
             elif sc.decision in ("low_margin", "no_candidate", "name_mentioned"):
                 con.execute("INSERT OR REPLACE INTO review_queue (utt_id, reason, payload, resolved) VALUES (?,?,?,0)",
                             (uid, sc.decision, json.dumps({"top": sc.top[:3], "run_id": r.run_id, "start_s": r.start_s,
-                                                           "inherited": r.inherited})))
+                                                           "inherited": r.inherited, "p_right": r.extra.get("p_right")})))
                 n_queue += 1
     for k, v in stats.items():
         if isinstance(v, (int, float)) and v is not None:

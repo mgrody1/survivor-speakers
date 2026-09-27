@@ -435,6 +435,25 @@ and captionless episodes first lost ~6 points because the calibrator read "no ca
 match; fixed with `ep_has_caps` / `ep_has_cards` features (replay: captionless 62.0% -> 71.2% of speech at 97%, vs the
 rule's 68.1%). With the calibrator deciding, episodes with caption names stay about where the rolling pass left them.
 
+## 7t. import-names: speaker names from another caption release (2026-09-27)
+
+`survspk import-names [--season US41] [--episodes 2,3] [--dry-run]` (survspk/import_names.py). Some of our subtitle
+files carry no `NAME:` labels although the OpenSubtitles release in hipml/survivor-subtitles-cleaned (Hugging Face,
+S1-47, research use, credit CBS) does. The parquet is downloaded once to work_root/external/ and stays local.
+
+- Maps the source clock onto ours from exact, unique line matches (offset + drift), then puts each named source turn
+  on our nearest matching line (rapidfuzz >= 85 on letters/digits, ±4 s). Our timing, italics and turn markers stay;
+  names already present are never replaced. Named/dashed source turns also set `is_turn` so a borrowed name stops at
+  the next speaker.
+- Writes only when >= 20 exact anchors and >= 50% of the source's names land (`ok` column). Dry run 2026-09-27:
+  ok for US40 E4/6/7, US41 E2/3/4/5/7/8/12/13, US42 E2, US43 E8/9/10, US46 E4/7 (~2,300 names); not ok for US05
+  (older text), US06 E1 and US42 E11 (no anchors: different release), US46 E11 (36 of 159 land).
+- Recorded in `name_imports` (line text included); `ingest_episode` re-applies them, so `ingest-subs --force` keeps
+  them, and a different subtitle file (text no longer matches) silently drops them. Lines carry
+  `name_source: "import"` / `turn_source: "import"`. Imported names are not in `name_tokens` (names-report).
+- After importing, processed episodes need `run VS EP --from segment --force` (human labels are re-anchored), then
+  bank/assign or `revisit`, then `calibrate --write`.
+
 ## 8. Gotchas (each cost time once)
 
 * Never open `survspk.sqlite` from the Cowork Linux VM (`~/mnt/Stargazer/...`). SQLite locks and the WAL index do not

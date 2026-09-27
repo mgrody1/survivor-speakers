@@ -60,6 +60,9 @@ def ingest_episode(settings: Settings, con: sqlite3.Connection, row: sqlite3.Row
         "UPDATE episodes SET subtitle_convention=?, status='subs_ingested' WHERE version_season=? AND episode=?",
         (json.dumps(conv.flags()), vs, ep),
     )
+    from .import_names import apply_imports
+
+    n_imported = apply_imports(con, vs, ep)        # names borrowed from another release of these captions (import-names)
     if name_counter is not None:
         for name, n in conv.names.items():
             name_counter.setdefault((vs, name), Counter())["lines"] += n
@@ -67,7 +70,7 @@ def ingest_episode(settings: Settings, con: sqlite3.Connection, row: sqlite3.Row
     con.commit()
     return {"version_season": vs, "episode": ep, "n_cues": conv.n_cues, "n_name_prefix": conv.n_name_prefix,
             "n_gtgt": conv.n_gtgt, "n_dash": conv.n_dash, "n_italic": conv.n_italic,
-            "n_multi_turn_cues": conv.n_multi_turn_cues, "n_names": len(conv.names)}
+            "n_multi_turn_cues": conv.n_multi_turn_cues, "n_names": len(conv.names), "n_imported": n_imported}
 
 
 def ingest_all(settings: Settings, con: sqlite3.Connection, seasons: list[str] | None = None,

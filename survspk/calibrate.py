@@ -408,6 +408,39 @@ def score_labels(settings, model: Calibrator, resolver=None) -> int:
     return n
 
 
+QUEUE_REASONS = ("low_margin", "no_candidate", "name_mentioned")
+
+
+def score_queue(settings, model: Calibrator, resolver=None) -> int:
+    """Put the chance that the top voice match is right into each open queue line's payload (p_right), the way
+    assign now does for new ones, so downstream features can count a queued line as a weighted guess."""
+    from . import db as dbm
+
+    con = dbm.init_db(settings.db_path, settings.sqlite_journal)
+    rows = pd.read_sql_query(f"""SELECT q.utt_id, q.payload, u.version_season AS vs, u.episode AS ep, u.domain_hint AS domain
+                                 FROM review_queue q JOIN utterances u USING (utt_id)
+                                 WHERE q.resolved=0 AND q.reason IN ({",".join("?" * len(QUEUE_REASONS))})""",
+                             con, params=QUEUE_REASONS)
+    if rows.empty:
+        return 0
+    rows["pl"] = rows.payload.apply(lambda s_: json.loads(s_ or "{}"))
+    rows["key"] = rows.pl.apply(lambda d: (d.get("run_id"), json.dumps(d.get("top"))))
+    n = 0
+    for (vs, ep), e in rows.groupby(["vs", "ep"]):
+        bank, ctx = bank_support(con, vs, int(ep)), EpisodeContext(con, vs, int(ep))
+        for _, g in e.groupby("key"):
+            dom = g.domain.iloc[0] if g.domain.iloc[0] in ("confessional", "field") else "field"
+            f = group_features(con, resolver, vs, int(ep), g.utt_id.tolist(), g.pl.iloc[0].get("top"), dom, bank, ctx)
+            if f is None:
+                continue
+            p = round(model.prob(f), 4)
+            con.executemany("UPDATE review_queue SET payload=? WHERE utt_id=?",
+                            [(json.dumps({**pl, "p_right": p}), u) for u, pl in zip(g.utt_id, g.pl)])
+            n += len(g)
+    con.commit()
+    return n
+
+
 def run(settings, write: bool = False, l2: float = 1.0, seasons: list[str] | None = None, log=print) -> dict:
     from .aliases import Resolver
 
@@ -437,4 +470,5 @@ def run(settings, write: bool = False, l2: float = 1.0, seasons: list[str] | Non
         m.save(path)
         rep["written"] = str(path)
         rep["scored_labels"] = score_labels(settings, m, res)
+        rep["scored_queue"] = score_queue(settings, m, res)
     return rep
