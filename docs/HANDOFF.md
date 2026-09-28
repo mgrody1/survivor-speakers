@@ -471,7 +471,17 @@ public castaway names only: dialogue text is read to find names and never writte
 - Check (2026-09-27): season Spearman of confessional_runs vs survivoR confessional_count 0.94-0.99 (8 full seasons);
   our counts ~2.2x theirs. Explainer page: "Who Talks to Whom" artifact + Who_Talks_to_Whom.pdf.
 
+- export-stats also writes speech_topics.csv (long form) and topics.csv when Gamebot's topic model exists
+  (../Gamebot/data_cache/nlp/topics, newest topics_vN; `--topics DIR` to point elsewhere). Topics: 40 from
+  scripts/topic_model.py in Gamebot, fit on all 50 seasons' captions, named by hand.
+
 ## 8. Gotchas (each cost time once)
+
+- S10-41 captions label the host in Title case ("Jeff: ...", "Probst: ...", about 15,000 lines), which NAME_RE (all
+  capitals) missed, so those seasons looked unnamed. `subparse.HOST_TITLE_RE` reads them (host only; other Title-case
+  prefixes there are credits such as "Sync:"). Re-ingest a season to pick it up; US31 then needs a re-segment.
+- US32 E11's chosen ".en.hi.srt" was Polish. `quick_stats` now scores each file's English (share of the commonest
+  English words, ~0.35 for English) and the chooser skips files under 0.2.
 
 - One-letter `NAME:` prefixes were dropped as noise, which silently lost every `Q:` line (Q Burdette, US46/US50:
   95 caption lines, 0 bank samples, so assign reported him "unbankable"). `subparse.SINGLE_LETTER_NAMES` now lists

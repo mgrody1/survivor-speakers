@@ -8,6 +8,8 @@ recap and the scenes-from-next-week preview are left out of every count except `
   speech_mentions.csv      speaker -> named     lines in which one speaker names another (and direct addresses)
   speech_interactions.csv  speaker -> next      turn transitions in conversation (not confessionals)
   speech_quality.csv       episode              coverage, label-source mix, audits, open queue, alignment
+  speech_topics.csv        castaway x episode   share of their words on each of the series-wide topics (long form)
+  topics.csv               topic                name, group, keywords (from Gamebot's scripts/topic_model.py)
   data_dictionary.csv      every column: table, type, unit, meaning, what NA means
   manifest.json            export and pipeline versions, models, row counts, file checksums
 
@@ -353,7 +355,57 @@ DICTIONARY: dict[str, list[tuple[str, str, str, str, str]]] = {
         ("transitions_unknown", "int", "count", "transitions with an unattributed side, not in speech_interactions", ""),
         ("confessional_rank_agreement", "real", "-1..1", "Spearman correlation of our caption-named confessional runs with survivoR's confessional counts", "NA if survivoR has none"),
     ],
+    "speech_topics": KEYS + [
+        ("castaway_id", "text", "", "survivoR castaway_id", "never NA"),
+        ("topic_id", "int", "", "topic number in the series-wide topic model (see topics.csv)", "never NA"),
+        ("topic", "text", "", "topic name", "never NA"),
+        ("topic_group", "text", "", "strategy, social, advantage, camp, personal, challenge, tribal or other", "never NA"),
+        ("share", "real", "0-1", "share of the castaway's topic-assigned words on this topic this episode (sums to 1 over topics)", "never NA"),
+        ("topic_words", "int", "words", "the castaway's words in stretches of 5+ words, the denominator", "never NA"),
+    ],
+    "topics": [
+        ("topic_id", "int", "", "topic number", "never NA"),
+        ("topic", "text", "", "name given by hand from the keywords and example lines", "never NA"),
+        ("topic_group", "text", "", "group of topics", "never NA"),
+        ("keywords", "text", "", "the ten words most particular to the topic (class-based TF-IDF)", "never NA"),
+        ("share_of_words", "real", "0-1", "share of all words in the series on this topic", "never NA"),
+        ("host_share", "real", "0-1", "share of the topic's words said by the host", "never NA"),
+        ("confessional_share", "real", "0-1", "share of the topic's words said in confessionals", "never NA"),
+    ],
 }
+
+
+def load_topics(topic_dir: Path | None, episodes: set[tuple[str, int]]) -> tuple[list[dict], list[dict], dict | None]:
+    """speech_topics rows (long form) and the topics lookup from Gamebot's topic model (scripts/topic_model.py), for
+    the exported episodes. Castaway-episode shares use the same speaker labels as speech_stats."""
+    if topic_dir is None or not topic_dir.exists():
+        return [], [], None
+    vers = sorted((p for p in topic_dir.glob("topics_v*.json") if re.fullmatch(r"topics_v\d+\.json", p.name)),
+                  key=lambda p: int(re.sub(r"\D", "", p.stem)))
+    if not vers:
+        return [], [], None
+    meta = json.loads(vers[-1].read_text())
+    ver = meta["version"]
+    shares = topic_dir / f"topic_player_episode_{ver}.csv"
+    if not shares.exists():
+        return [], [], None
+    t = {x["id"]: x for x in meta["topics"]}
+    lookup = [{"topic_id": i, "topic": x.get("name") or f"topic {i}", "topic_group": x.get("group") or "other",
+               "keywords": ", ".join(x["keywords"][:10]), "share_of_words": x["share_words"],
+               "host_share": x["host_share"], "confessional_share": x["confessional_share"]} for i, x in sorted(t.items())]
+    rows = []
+    with open(shares) as f:
+        for r in csv.DictReader(f):
+            key = (r["version_season"], int(r["episode"]))
+            if key not in episodes:
+                continue
+            for i in sorted(t):
+                rows.append({"version_season": key[0], "season": int(re.sub(r"\D", "", key[0]) or 0), "episode": key[1],
+                             "castaway_id": r["castaway_id"], "topic_id": i, "topic": lookup[i]["topic"],
+                             "topic_group": lookup[i]["topic_group"], "share": round(float(r[f"t{i:02d}"]), 5),
+                             "topic_words": int(r["words"])})
+    info = {k: meta.get(k) for k in ("version", "model", "k", "fit_seasons", "created")}
+    return rows, lookup, info
 
 
 def write_csv(path: Path, table: str, rows: list[dict]) -> None:
@@ -377,7 +429,8 @@ def _git(repo: Path) -> str | None:
         return None
 
 
-def export(settings, con: sqlite3.Connection, resolver, seasons: list[str] | None, out: Path, log=print) -> dict:
+def export(settings, con: sqlite3.Connection, resolver, seasons: list[str] | None, out: Path, log=print,
+           topic_dir: Path | None = None) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     have = con.execute("""SELECT version_season, episode FROM utterances WHERE version_season IN
                               (SELECT DISTINCT u.version_season FROM labels l JOIN utterances u USING (utt_id))
@@ -391,8 +444,12 @@ def export(settings, con: sqlite3.Connection, resolver, seasons: list[str] | Non
         for k, rows in t.items():
             tables[k].extend(rows)
         log(f"{vs} E{ep:02d}: coverage {t['speech_quality'][0]['speaker_coverage']}")
+    trows, tlookup, tinfo = load_topics(topic_dir, set(eps))
+    tables["speech_topics"], tables["topics"] = trows, tlookup
     files = {}
     for name in DICTIONARY:
+        if name in ("speech_topics", "topics") and not tinfo:
+            continue
         p = out / f"{name}.csv"
         write_csv(p, name, tables[name])
         files[p.name] = {"rows": len(tables[name]), "sha256_16": _sha(p)}
@@ -421,6 +478,7 @@ def export(settings, con: sqlite3.Connection, resolver, seasons: list[str] | Non
         "survivoR_snapshot": ({"path": settings.survivor_db_path.name,
                                "modified": dt.datetime.fromtimestamp(settings.survivor_db_path.stat().st_mtime).isoformat(timespec="seconds")}
                               if settings.survivor_db_path.exists() else None),
+        "topic_model": tinfo,
         "files": files,
         "contains": "derived counts and public castaway names only; no audio, video or dialogue text",
     }

@@ -771,7 +771,8 @@ def revisit(version_season: str,
 
 @app.command("export-stats")
 def export_stats_cmd(season: Optional[list[str]] = typer.Option(None, "--season", "-s", help="version_season(s); default all processed"),
-                     out: Optional[Path] = typer.Option(None, help="output folder (default work_root/exports/speech_v1)")) -> None:
+                     out: Optional[Path] = typer.Option(None, help="output folder (default work_root/exports/speech_v1)"),
+                     topics: Optional[Path] = typer.Option(None, help="Gamebot topic model folder (default ../Gamebot/data_cache/nlp/topics)")) -> None:
     """Derived speech tables for survivoR: speech_stats, speech_mentions, speech_interactions, speech_quality,
     data_dictionary and manifest. Counts and public names only; no dialogue text."""
     from .export_stats import export
@@ -782,11 +783,13 @@ def export_stats_cmd(season: Optional[list[str]] = typer.Option(None, "--season"
     if r is None:
         raise typer.BadParameter("survivoR snapshot missing: run `survspk refresh-survivor` first")
     out = out or s.paths.work_root / "exports" / "speech_v1"
-    m = export(s, con, r, season or None, out, log=lambda x: None)
+    topics = topics or s.paths.work_root.parent / "Gamebot" / "data_cache" / "nlp" / "topics"
+    m = export(s, con, r, season or None, out, log=lambda x: None, topic_dir=topics)
     rprint(f"[green]wrote {out}[/green]")
     for f, info in m["files"].items():
         rprint(f"  {f}: {info['rows']} rows")
-    rprint("  data_dictionary.csv, manifest.json")
+    rprint("  data_dictionary.csv, manifest.json" + ("" if m.get("topic_model") else
+           f"  (no topic model found in {topics}: speech_topics.csv skipped)"))
 
 
 @app.command()

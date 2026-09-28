@@ -93,3 +93,23 @@ def test_load_episode_and_csv_columns_match_dictionary(tmp_path):
         header = next(csv.reader(open(p)))
         assert header == [f[0] for f in ex.DICTIONARY[name]]
     assert "Kenzie, go" not in json.dumps(t) and "Ok." not in json.dumps(t)   # never any dialogue in the output
+
+
+def test_topics_from_gamebot_model(tmp_path):
+    meta = {"version": "v2", "model": "m", "k": 2, "fit_seasons": ["US46"], "created": "x",
+            "topics": [{"id": 0, "name": "Food", "group": "camp", "keywords": ["rice", "food"], "share_words": 0.6,
+                        "host_share": 0.1, "confessional_share": 0.2},
+                       {"id": 1, "name": None, "group": None, "keywords": ["vote"], "share_words": 0.4,
+                        "host_share": 0.0, "confessional_share": 0.3}]}
+    (tmp_path / "topics_v2.json").write_text(json.dumps(meta))
+    (tmp_path / "topics_v1.json").write_text(json.dumps(meta | {"version": "v1"}))
+    (tmp_path / "topics_bt_US44.json").write_text(json.dumps(meta | {"version": "bt_US44"}))
+    (tmp_path / "topic_player_episode_v2.csv").write_text(
+        "version_season,episode,castaway_id,words,t00,t01\nUS46,4,A1,120,0.25,0.75\nUS47,1,B2,50,1.0,0.0\n")
+    rows, lookup, info = ex.load_topics(tmp_path, {("US46", 4)})
+    assert info["version"] == "v2" and len(rows) == 2 and {r["castaway_id"] for r in rows} == {"A1"}
+    assert sum(r["share"] for r in rows) == 1.0 and rows[0]["topic"] == "Food" and rows[1]["topic_group"] == "other"
+    assert lookup[1]["topic"] == "topic 1"
+    assert ex.load_topics(tmp_path / "missing", {("US46", 4)}) == ([], [], None)
+    for name, rs in (("speech_topics", rows), ("topics", lookup)):
+        ex.write_csv(tmp_path / f"{name}.csv", name, rs)

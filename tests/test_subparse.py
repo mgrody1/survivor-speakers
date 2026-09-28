@@ -104,3 +104,19 @@ def test_tolerates_crlf_and_bom():
     txt = "﻿1\r\n00:00:01,000 --> 00:00:02,000\r\nHello.\r\n\r\n"
     cues = parse_srt_text(txt)
     assert len(cues) == 1 and cues[0].text == "Hello."
+
+
+def test_single_letter_names_only_for_known_castaways():
+    cues = parse_srt_text("1\n00:00:01,000 --> 00:00:02,000\nQ: I'm running this game.\n\n"
+                          "2\n00:00:03,000 --> 00:00:04,000\nA: Richard Hatch\n")
+    assert cues[0].lines[0].sdh_name == "Q" and cues[0].lines[0].text == "I'm running this game."
+    assert cues[1].lines[0].sdh_name is None
+
+
+def test_title_case_host_label():
+    cues = parse_srt_text("1\n00:00:01,000 --> 00:00:02,000\n>> Jeff: Come on in, guys!\n\n"
+                          "2\n00:00:03,000 --> 00:00:04,000\nProbst: Survivors ready?\n\n"
+                          "3\n00:00:05,000 --> 00:00:06,000\nSync: someone\n")
+    assert cues[0].lines[0].sdh_name == "JEFF" and cues[0].lines[0].text == "Come on in, guys!" and cues[0].lines[0].is_turn
+    assert cues[1].lines[0].sdh_name == "PROBST"
+    assert cues[2].lines[0].sdh_name is None

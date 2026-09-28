@@ -68,3 +68,16 @@ def test_a_track_that_names_its_speakers_wins_within_a_timing_tier():
     assert choose_subtitle([downloaded, embedded], True, 3900)["path"] == "v.mkv#s:3"
     bad_timing = {**embedded, "duration_delta_s": 400.0}
     assert choose_subtitle([downloaded, bad_timing], True, 3900)["path"] == "dl.en.hi.srt"   # timing still comes first
+
+
+def test_foreign_language_file_is_not_chosen():
+    from survspk.inventory import choose_subtitle
+    from survspk.subparse import english_share
+
+    assert english_share("we need to vote him out tonight and I know it") > 0.2
+    assert english_share("nie wiem jak jest tak ale jest gra dobra") < 0.2
+    polish = {"path": "a.en.hi.srt", "source": "sidecar", "is_sdh": 1, "n_cues": 753, "duration_delta_s": 2.0,
+              "n_names": 0, "en_share": 0.07}
+    english = {"path": "b.en.srt", "source": "sidecar", "is_sdh": 0, "n_cues": 842, "duration_delta_s": 2.0,
+               "n_names": 0, "en_share": 0.36}
+    assert choose_subtitle([polish, english], prefer_sdh=True, duration_s=2600)["path"] == "b.en.srt"

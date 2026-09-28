@@ -29,6 +29,15 @@ ITALIC_CLOSE_RE = re.compile(r"</i\s*>", re.I)
 TURN_RE = re.compile(r"^\s*(?:>>|[-–—])\s*")
 # Speaker prefix: ALL-CAPS token(s) followed by a colon. Allows B.B., JEFF PROBST, TK, DR. WILL, MAN #2.
 NAME_RE = re.compile(r"^\s*([A-Z][A-Z0-9.'\-#]*(?:\s+[A-Z0-9#][A-Z0-9.'\-#]*){0,2})\s*(?:\([^)]*\))?\s*:\s*(.*)$")
+# The host in Title case ("Jeff: Come on in"): S10-41 captions label only him this way, about 15,000 lines. Other
+# Title-case prefixes in those files are credits ("Sync:", "Subrip:") or rare, so only the host's are read.
+HOST_TITLE_RE = re.compile(r"^\s*(Jeff(?:\s+Probst)?|Probst)\s*:\s*(.*)$")
+# Castaways who go by one letter. Other one-letter "NAME:" prefixes are quiz answers ("A: Richard Hatch") or "I:".
+SINGLE_LETTER_NAMES = frozenset({"Q"})     # Q Burdette (US46, US50)
+
+
+def is_speaker_token(tok: str) -> bool:
+    return len(tok) >= 2 or tok in SINGLE_LETTER_NAMES
 # Whole-line sound captions.
 SOUND_RE = re.compile(r"^\s*(?:\([^)]*\)|\[[^\]]*\]|♪+.*♪*|\*[^*]*\*)\s*$")
 MUSIC_CHARS = "♪♫"
@@ -149,9 +158,9 @@ def _clean_line(raw: str, italic_open: bool) -> tuple[Line, bool]:
         s = s[m.end():]
     # speaker prefix
     sdh_name = None
-    m = NAME_RE.match(s)
-    if m and len(m.group(1)) >= 2:
-        sdh_name = re.sub(r"\s+", " ", m.group(1)).strip(" .")
+    m = NAME_RE.match(s) or HOST_TITLE_RE.match(s)
+    if m and is_speaker_token(m.group(1)):
+        sdh_name = re.sub(r"\s+", " ", m.group(1)).strip(" .").upper()
         s = m.group(2)
     # sound caption
     is_sound = False
@@ -249,7 +258,19 @@ def quick_stats(path: Path) -> dict:
         "last_cue_end_s": max(c.end_s for c in cues),
         "parse_error": None,
         "n_names": sum(1 for c in cues for ln in c.lines if ln.sdh_name),     # NAME: lines, the speaker labels we use
+        "en_share": english_share(" ".join(ln.text for c in cues for ln in c.lines)),
     }
+
+
+EN_WORDS = frozenset("the and you to i a it is that of in we this be have not for on with what are was but just so know my me"
+                     .split())
+
+
+def english_share(text: str) -> float:
+    """Share of words that are the commonest English words: about 0.35 for English captions, 0.07 for the Polish file
+    that was named .en.hi.srt (US32 E11)."""
+    ws = [w.lower() for w in re.findall(r"[A-Za-z']+", text)]
+    return sum(w in EN_WORDS for w in ws) / len(ws) if ws else 0.0
 
 
 def is_sdh_filename(name: str) -> bool:

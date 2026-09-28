@@ -157,6 +157,7 @@ def timing_ok(delta_s: float | None) -> bool | None:
 
 
 NAMED_MIN = 20
+MIN_EN_SHARE = 0.2          # English captions score about 0.35 (share of the commonest English words)
 
 
 def choose_subtitle(cands: list[dict], prefer_sdh: bool, duration_s: float | None) -> dict | None:
@@ -164,7 +165,8 @@ def choose_subtitle(cands: list[dict], prefer_sdh: bool, duration_s: float | Non
     Within a tier: a file that names its speakers (>= NAMED_MIN `NAME:` lines), then SDH (if preferred), then the
     smaller |delta|, then more cues. Unparsed embedded streams (n_cues None) are only chosen when nothing parsed is
     available. (US51 E01: the downloaded .hi.srt had 1 name, the video's own SDH track 241.)"""
-    parsed = [c for c in cands if not c.get("parse_error") and (c.get("n_cues") or 0) > 50]
+    parsed = [c for c in cands if not c.get("parse_error") and (c.get("n_cues") or 0) > 50
+              and (c.get("en_share") is None or c["en_share"] >= MIN_EN_SHARE)]      # a mislabelled foreign file
 
     def key(c: dict):
         ok = timing_ok(c.get("duration_delta_s"))
@@ -263,7 +265,7 @@ def build_inventory(
                 "is_sdh": sf.is_sdh, "n_cues": st["n_cues"], "first_cue_s": st["first_cue_s"],
                 "last_cue_end_s": st["last_cue_end_s"],
                 "duration_delta_s": round(delta, 2) if delta is not None else None,
-                "parse_error": st["parse_error"], "chosen": 0, "n_names": st.get("n_names", 0),
+                "parse_error": st["parse_error"], "chosen": 0, "n_names": st.get("n_names", 0), "en_share": st.get("en_share"),
             })
         text_streams = [st for st in pr.subs if st.get("codec") in ("subrip", "ass", "ssa", "webvtt", "mov_text")]
         for st in text_streams:
@@ -286,7 +288,8 @@ def build_inventory(
                     delta = (st["last_cue_end_s"] - pr.duration_s) if (st["last_cue_end_s"] and pr.duration_s) else None
                     c.update({"n_cues": st["n_cues"], "first_cue_s": st["first_cue_s"], "last_cue_end_s": st["last_cue_end_s"],
                               "duration_delta_s": round(delta, 2) if delta is not None else None,
-                              "parse_error": st["parse_error"], "extracted_path": str(srt), "n_names": st.get("n_names", 0)})
+                              "parse_error": st["parse_error"], "extracted_path": str(srt), "n_names": st.get("n_names", 0),
+                              "en_share": st.get("en_share")})
                     log.info("%s E%02d: extracted embedded stream %s -> %s cues, Δ=%s", vs, v.episode, idx,
                              st["n_cues"], c["duration_delta_s"])
                 except Exception as e:  # noqa: BLE001
@@ -295,7 +298,7 @@ def build_inventory(
         for c in cands:
             c["timing_ok"] = timing_ok(c.get("duration_delta_s"))
             c["chosen"] = int(chosen is not None and c["path"] == chosen["path"])
-            upsert(con, "subtitle_files", {k: val for k, val in c.items() if k not in ("extracted_path", "n_names")},
+            upsert(con, "subtitle_files", {k: val for k, val in c.items() if k not in ("extracted_path", "n_names", "en_share")},
                    ("version_season", "episode", "path"))
         if chosen:
             row["subtitle_path"] = chosen.get("extracted_path") or chosen["path"]
