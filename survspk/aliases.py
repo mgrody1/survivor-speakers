@@ -92,12 +92,10 @@ class Resolver:
         )
 
     @lru_cache(maxsize=128)
-    def mention_patterns(self, version_season: str) -> dict[str, "re.Pattern[str]"]:
-        """speaker_id -> regex matching that person's name(s) as whole words in dialogue text. Used for the
-        'mention rule': a run that names its predicted speaker in the third person is almost never that speaker
-        (Survivor players say each other's names constantly and their own almost never). Nicknames from
-        aliases.yaml are included; the host gets every configured host name."""
-        names: dict[str, set[str]] = {}
+    def mention_names(self, version_season: str) -> dict[str, list[str]]:
+        """speaker_id -> the lowercase names a person is called by in dialogue (short name, first names, nicknames
+        from aliases.yaml of 3+ letters; every configured host name for the host), longest first."""
+        names: dict[str, set] = {}
         for r in self.cast(version_season):
             cid = r["castaway_id"]
             s = names.setdefault(cid, set())
@@ -111,11 +109,19 @@ class Resolver:
                 names[cid].add(tok)
         hosts, host_id = self.host_names(version_season)
         names[host_id] = set(hosts) | {h.split()[0] for h in hosts}
+        return {cid: sorted({x.strip().lower() for x in s if len(x.strip()) >= 2}, key=len, reverse=True)
+                for cid, s in names.items()}
+
+    @lru_cache(maxsize=128)
+    def mention_patterns(self, version_season: str) -> dict[str, "re.Pattern[str]"]:
+        """speaker_id -> regex matching that person's name(s) as whole words in dialogue text. Used for the
+        'mention rule': a run that names its predicted speaker in the third person is almost never that speaker
+        (Survivor players say each other's names constantly and their own almost never). Nicknames from
+        aliases.yaml are included; the host gets every configured host name."""
         out = {}
-        for cid, s in names.items():
-            alts = sorted({re.escape(x.strip().lower()) for x in s if len(x.strip()) >= 2}, key=len, reverse=True)
+        for cid, alts in self.mention_names(version_season).items():
             if alts:
-                out[cid] = re.compile(r"(?<![A-Za-z'])(?:" + "|".join(alts) + r")(?![A-Za-z])", re.I)
+                out[cid] = re.compile(r"(?<![A-Za-z'])(?:" + "|".join(re.escape(a) for a in alts) + r")(?![A-Za-z])", re.I)
         return out
 
     def mentions(self, text: str, speaker_id: str, version_season: str) -> bool:

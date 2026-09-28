@@ -454,7 +454,28 @@ S1-47, research use, credit CBS) does. The parquet is downloaded once to work_ro
 - After importing, processed episodes need `run VS EP --from segment --force` (human labels are re-anchored), then
   bank/assign or `revisit`, then `calibrate --write`.
 
+## 7u. export-stats: speech tables for survivoR (2026-09-27)
+
+`survspk export-stats [--season US47] [--out DIR]` (survspk/export_stats.py) writes to work_root/exports/speech_v1/:
+speech_stats (castaway x episode), speech_mentions (who names whom, direct addresses), speech_interactions (turn
+transitions in conversation), speech_quality (episode coverage, label-source mix, audits, queue), data_dictionary.csv
+and manifest.json (versions, models, calibrator checksum, survivoR snapshot, row counts, file checksums). Counts and
+public castaway names only: dialogue text is read to find names and never written.
+
+- Body only (recap/preview excluded; `recap_seconds` records replays). Every label counts; auto labels carry p_right,
+  so rows have `expected_wrong_seconds` / `est_precision`. Unknown speech stays in the denominator (`speaker_coverage`).
+- Mentions: `Resolver.mention_names` (short/first names, 3+ letter aliases, host names); a first name shared by two
+  castaways goes to the one still in the game, else skipped (`ambiguous_names`). Direct address = vocative pattern.
+- Transition = speaker change within 5 s, neither side confessional. Only ~23% of transitions have both speakers known
+  (field chatter is where unknowns concentrate), so speech_interactions is the thinnest table.
+- Check (2026-09-27): season Spearman of confessional_runs vs survivoR confessional_count 0.94-0.99 (8 full seasons);
+  our counts ~2.2x theirs. Explainer page: "Who Talks to Whom" artifact + Who_Talks_to_Whom.pdf.
+
 ## 8. Gotchas (each cost time once)
+
+- One-letter `NAME:` prefixes were dropped as noise, which silently lost every `Q:` line (Q Burdette, US46/US50:
+  95 caption lines, 0 bank samples, so assign reported him "unbankable"). `subparse.SINGLE_LETTER_NAMES` now lists
+  the castaways who go by one letter; other one-letter prefixes (quiz answers "A:", "I:") are still ignored.
 
 * Never open `survspk.sqlite` from the Cowork Linux VM (`~/mnt/Stargazer/...`). SQLite locks and the WAL index do not
   cross that mount, so a VM connection thinks it is alone and can checkpoint and delete `-wal`/`-shm` under the

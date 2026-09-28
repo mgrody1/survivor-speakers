@@ -25,6 +25,7 @@ M2/M3 (bank + assign):
 
 Corpus / fine-tuning:
   survspk calibrate [--write]            fit the auto-label calibrator (review app: audit -> "check likely errors")
+  survspk export-stats [--season US47]  speech_stats / mentions / interactions / quality CSVs for survivoR
   survspk export-corpus corpus/          rttm + uem + database.yml + spk manifest/trials from every labelled episode
   survspk finetune-ecapa corpus/ models/ecapa-survivor   fine-tune the embedding model; prints baseline EER first
   uv run python scripts/finetune_pyannote_seg.py --corpus corpus/ --out models/seg-survivor
@@ -766,6 +767,26 @@ def revisit(version_season: str,
                                WHERE u.version_season=? AND u.episode=? AND l.source='auto'""", (version_season, ep)).fetchone()[0]
         rprint(f"{version_season} E{ep:02d}: auto-labelled speech {before / 60:.1f} -> {after / 60:.1f} min; "
                f"caption agreement on confident runs {st.get('sdh_agreement_confident')}")
+
+
+@app.command("export-stats")
+def export_stats_cmd(season: Optional[list[str]] = typer.Option(None, "--season", "-s", help="version_season(s); default all processed"),
+                     out: Optional[Path] = typer.Option(None, help="output folder (default work_root/exports/speech_v1)")) -> None:
+    """Derived speech tables for survivoR: speech_stats, speech_mentions, speech_interactions, speech_quality,
+    data_dictionary and manifest. Counts and public names only; no dialogue text."""
+    from .export_stats import export
+
+    s = load_settings()
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    r = _resolver(s)
+    if r is None:
+        raise typer.BadParameter("survivoR snapshot missing: run `survspk refresh-survivor` first")
+    out = out or s.paths.work_root / "exports" / "speech_v1"
+    m = export(s, con, r, season or None, out, log=lambda x: None)
+    rprint(f"[green]wrote {out}[/green]")
+    for f, info in m["files"].items():
+        rprint(f"  {f}: {info['rows']} rows")
+    rprint("  data_dictionary.csv, manifest.json")
 
 
 @app.command()
