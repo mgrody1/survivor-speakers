@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .subparse import NAME_RE, TAG_RE
+from .subparse import NAME_RE, TAG_RE, is_speaker_token
 
 HF_URL = "https://huggingface.co/datasets/hipml/survivor-subtitles-cleaned/resolve/main/data/train-00000-of-00001.parquet"
 SPLIT_TURNS = re.compile(r"(?:^|\s)[-–—]\s*(?=\S)")
@@ -65,7 +65,7 @@ def split_turns(start: float, end: float, text: str) -> list[Turn]:
     for k, p in enumerate(parts):
         p = p.strip()
         m = NAME_RE.match(p)
-        name, body = (re.sub(r"\s+", " ", m.group(1)).strip(" ."), m.group(2)) if m and len(m.group(1)) >= 2 else (None, p)
+        name, body = (re.sub(r"\s+", " ", m.group(1)).strip(" ."), m.group(2)) if m and is_speaker_token(m.group(1)) else (None, p)
         out.append(Turn(start, end, name, body.strip(), marker=k > 0 or lead))
     return out
 

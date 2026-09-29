@@ -13,7 +13,8 @@ def test_split_turns_names_and_dashes():
     t = im.split_turns(0, 1, "- I'm going home. - No way.")
     assert [x.marker for x in t] == [True, True]
     assert im.split_turns(0, 1, "Plain line.")[0].name is None
-    assert im.split_turns(0, 1, "I: think so")[0].name is None       # one-letter "names" are not speakers
+    assert im.split_turns(0, 1, "I: think so")[0].name is None       # one-letter "names" are not speakers...
+    assert im.split_turns(0, 1, "Q: I'm the swing vote.")[0].name == "Q"   # ...except Q Burdette
 
 
 LINES = [f"this is line number {w} of the episode" for w in

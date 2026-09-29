@@ -793,6 +793,59 @@ def export_stats_cmd(season: Optional[list[str]] = typer.Option(None, "--season"
 
 
 @app.command()
+def faces(version_season: str, episodes: Optional[str] = typer.Option(None, help="e.g. 1-14 or 2,3 (default: all with video)"),
+          force: bool = False) -> None:
+    """[prototype] Find and embed the faces on screen, 2 frames a second (needs InsightFace; see survspk/faces.py)."""
+    from .faces import extract_episode, face_app
+
+    s = load_settings(version_season)
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    eps = _episode_list(con, version_season, episodes)
+    app_ = face_app()
+    for ep in eps:
+        extract_episode(s, con, version_season, ep, app=app_, force=force, log_=rprint)
+
+
+@app.command("faces-eval")
+def faces_eval(version_season: str, episodes: Optional[str] = None) -> None:
+    """[prototype] How well faces name the speaker: leave-one-episode-out on caption-named and person-labelled lines."""
+    import json as _json
+    from .faces import evaluate
+
+    s = load_settings(version_season)
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    rep = evaluate(s, con, _resolver(s), version_season, _episode_list(con, version_season, episodes) if episodes else None)
+    rprint(_json.dumps(rep, indent=1))
+
+
+@app.command()
+def scenes(version_season: str, episodes: Optional[str] = typer.Option(None, help="e.g. 1-14 or 2,3 (default: all with video)"),
+           force: bool = False) -> None:
+    """[prototype] Embed one frame a second with SigLIP 2 for scene place (camp/challenge/tribal; see survspk/scene_type.py)."""
+    from .scene_type import Embedder, extract_episode
+
+    s = load_settings(version_season)
+    con = dbm.init_db(s.db_path, s.sqlite_journal)
+    emb = Embedder()
+    for ep in _episode_list(con, version_season, episodes):
+        extract_episode(s, con, version_season, ep, emb, force=force, log_=rprint)
+
+
+def _episode_list(con, vs: str, spec: Optional[str]) -> list[int]:
+    if not spec:
+        return [r[0] for r in con.execute("SELECT episode FROM episodes WHERE version_season=? AND video_path IS NOT NULL "
+                                          "AND COALESCE(is_reunion, 0)=0 ORDER BY episode", (vs,))]
+    out: list[int] = []
+    for part in spec.split(","):
+        if "-" in part:
+            a, b = part.split("-")
+            out += list(range(int(a), int(b) + 1))
+        elif part.strip():
+            out.append(int(part))
+    return out
+
+
+@app.command()
 def calibrate(write: bool = typer.Option(False, "--write", help="save work_root/models/calibrator.json (the review app's "
                                                                "'likely errors' check uses it)"),
               l2: float = typer.Option(1.0, help="L2 penalty")) -> None:

@@ -475,6 +475,52 @@ public castaway names only: dialogue text is read to find names and never writte
   (../Gamebot/data_cache/nlp/topics, newest topics_vN; `--topics DIR` to point elsewhere). Topics: 40 from
   scripts/topic_model.py in Gamebot, fit on all 50 seasons' captions, named by hand.
 
+## 7v. Faces prototype, S47 (2026-09-28)
+
+`survspk faces US47 --episodes 1-14` then `survspk faces-eval US47` (survspk/faces.py; needs
+`uv run --with insightface --with onnxruntime --with opencv-python-headless`, research-use weights). 2 fps, VideoToolbox
+decode, InsightFace buffalo_l on CoreML: ~2-6 min an episode, ~9-14k faces, npz in work_root/faces/. Gallery = largest
+face during name cards + trusted lines whose face matches the castaway's cards (VERIFY_SIM 0.5); host from the mode of
+his lines' faces.
+
+Findings (leave-one-episode-out, 1,999 trusted castaway lines):
+- Recognition is fine: card faces named from other episodes' cards 97% (319/329).
+- On screen is not speaking. Largest face = speaker: confessionals 60%, field 18%. The true speaker is on screen in
+  80% of confessional lines but only 60% of confident largest-face frames show them (voice over B-roll); field 25%.
+  Host lines 25% (narration). A cleaner gallery did not move these numbers; the limit is shot choice, not ArcFace.
+- A strict talking-head filter (one identity every frame, >= 6 frames, sim >= 0.55) is 93% right but covers 9% of
+  confessionals. Agreement with voice auto labels 63% overall, 86% on the strict subset.
+- Clock: sdh-labelled lines match faces best ~+2-3 s late, human-labelled at 0 (editing, not a clock bug: see below).
+- So faces cannot label on their own. Use them as calibrator features (voice pick on screen, face margin, share) and
+  add active-speaker detection (lip motion, e.g. Light-ASD/TalkNet) before trusting faces in group scenes.
+- Follow-ups (2026-09-29, scripts in survivor_audio/reports/tmp/: faces_lead, fuse_replay, fuse_eval, fuse_ceiling):
+  the +2-3 s is editing (picture cuts to the speaker after the line starts; audio and video are one .mkv), not a clock
+  bug. Face features stacked on p_right (replay of S47, leave one episode out): AUC 0.876 -> 0.880, small. When the
+  voice is wrong the true speaker is rarely on screen (confessional 28%, field 8%), so lip-motion detection could fix
+  ~3 min a season: not built. Voice + face agreeing against a label flags 70 runs (5 min): faces/US47_suspect_labels.csv.
+
+## 7w. Scene place and scene cast, S47 (2026-09-29)
+
+`survspk scenes US47` (survspk/scene_type.py): 1 fps, SigLIP 2 base (google/siglip2-base-patch16-224, Apache-2.0) on
+MPS, ~2-8 min an episode (decode-bound), npz in work_root/scenes/. Places: camp, challenge, tribal, scenery, graphics.
+A "confessional" is not a place (it is filmed at camp and a single frame of it looks like any camp close-up), so the
+zero-shot `closeup` type takes its neighbours' place (`locate`).
+- Zero-shot prompts alone were brittle (camp close-ups vs tribal). What works: a logistic probe on the frozen frames
+  with weak labels (TRIBAL COUNCIL card -> last body line = tribal; 60 s after a tribe/day card = camp; confident
+  zero-shot challenge/scenery/graphics). Held out: tribal block recall 0.96-0.99; contact sheets for E03 and E09 (no
+  cards) ~19/20 right per place. Script: reports/tmp/scenes_probe.py (not yet in the package).
+- The >= 6 s run rule for `confessional` also catches tribal answers and host/castaway speech at challenges: of 476
+  "confessional" minutes, 115 are at tribal and 65 at challenges. Voice at challenges is poor for castaways (field 14%
+  of 154 known runs, "confessional" 9% of 22).
+- Scene cast = castaways whose face (card gallery, sim >= 0.5) is seen within +-60 s inside the same place segment.
+  It holds the true speaker for 97% of confessional and 85% of field lines, 6-7 people of ~15. A voice pick outside
+  it is wrong ~95% of the time, but auto already avoids those (7 of 1,423 auto runs); the use is in the queue
+  (low_margin: right 64% inside vs 22% outside; no_candidate 39% vs 4%). Re-ranking the saved top 3 to the best
+  in-scene name: 81 runs changed, 6% -> 33% right, season 68.8% -> 70.1%. Stacking place + face on p_right: AUC
+  0.876 -> 0.882. Script: reports/tmp/scene_cast.py, fuse_place.py.
+- Next: pass the scene cast to assign as its candidate list for field runs (host and voice-over fall back to the full
+  cast) and measure with replay; consider `tribal` as a third bank domain.
+
 ## 8. Gotchas (each cost time once)
 
 - S10-41 captions label the host in Title case ("Jeff: ...", "Probst: ...", about 15,000 lines), which NAME_RE (all
